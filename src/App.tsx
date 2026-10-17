@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import Drawing from "./Drawing";
 import QuoteDocument from "./QuoteDocument";
 import {
@@ -13,9 +13,19 @@ import {
   PULL_FINISHES,
   PULL_LENGTHS,
   WOOD_FINISHES,
+  GST_RATE,
   actualSqFt,
-  applySheetRate,
+  ceilingAreaSqFt,
+  ceilingPrice,
+  glassPrice,
+  money,
+  pricePair,
+  quoteSubtotal,
+  sideCeilingModel,
   applyStarter,
+  BACKUP_APP,
+  backupFileName,
+  parseBackup,
   BRAND_LOGO,
   balanceWidth,
   ceilingModuleMm,
@@ -38,8 +48,6 @@ import {
   openingSqFt,
   normalizeShower,
   packageQuoteLines,
-  productGlassAmount,
-  productRate,
   saveWork,
   sheetBreakdown,
   loadCustomer,
@@ -60,6 +68,7 @@ import {
   sqmFromSqFt,
   wastageAmountOf,
   wastageExtraSqFt,
+  wastagePrice,
   wastageRateOf,
   unitToMm,
   updateSide,
@@ -110,16 +119,70 @@ import {
 const UNITS: UnitId[] = ["mm", "cm", "inch", "ft"];
 
 const PALETTE: { kind: ItemKind; label: string; note: string }[] = [
-  { kind: "fixed", label: "Fixed glass", note: "Drag into the frame" },
-  { kind: "door", label: "Door", note: "Then choose sliding or openable" },
-  { kind: "wall", label: "Wall", note: "Brick wall, either side" },
-  { kind: "return", label: "Return / T", note: "Adds a side you can design" },
+  { kind: "fixed", label: "Fixed glass", note: "Into the frame" },
+  { kind: "door", label: "Door", note: "Sliding or openable" },
+  { kind: "wall", label: "Wall", note: "Brick, either side" },
+  { kind: "return", label: "Return / T", note: "A side to design" },
 ];
 
 export default function App() {
   const [saved] = useState(() => loadWork());
   const [unit, setUnit] = useState<UnitId>(saved?.unit ?? "mm");
-  const [draft, setDraft] = useState<Shower>(() => saved?.draft ?? cloneShower({ width: 2000, height: 2100, depth: 900 } as Shower));
+  const [draft, setDraftState] = useState<Shower>(() => saved?.draft ?? cloneShower({ width: 2000, height: 2100, depth: 900 } as Shower));
+  const history = useRef<{ past: Shower[]; future: Shower[] }>({ past: [], future: [] });
+  const [historyTick, setHistoryTick] = useState(0);
+  const setDraft = (action: SetStateAction<Shower>) => {
+    setDraftState((current) => {
+      const next = typeof action === "function" ? (action as (value: Shower) => Shower)(current) : action;
+      if (next !== current) {
+        history.current.past.push(current);
+        if (history.current.past.length > 60) history.current.past.shift();
+        history.current.future = [];
+        setHistoryTick((tick) => tick + 1);
+      }
+      return next;
+    });
+  };
+  function undoDraft() {
+    const prev = history.current.past.pop();
+    if (!prev) return;
+    setDraftState((current) => {
+      history.current.future.push(current);
+      return prev;
+    });
+    setHistoryTick((tick) => tick + 1);
+  }
+  function redoDraft() {
+    const next = history.current.future.pop();
+    if (!next) return;
+    setDraftState((current) => {
+      history.current.past.push(current);
+      return next;
+    });
+    setHistoryTick((tick) => tick + 1);
+  }
+  function duplicateSelected() {
+    if (!selectedId) return;
+    setDraft((current) => {
+      const found = findItem(current, selectedId);
+      if (found) {
+        const copy = { ...found.item, id: uid("copy"), x: found.item.x + 80, channels: { ...found.item.channels } };
+        if (found.runId === "front") return { ...current, items: [...current.items, copy] };
+        return { ...current, sides: current.sides.map((side) => (side.id === found.runId ? { ...side, items: [...side.items, copy] } : side)) };
+      }
+      const side = current.sides.find((item) => item.id === selectedId);
+      if (!side) return current;
+      const copy = {
+        ...side,
+        id: uid("side"),
+        name: `${side.name} copy`,
+        attachX: side.attachX + 120,
+        ceiling: { ...side.ceiling, lights: side.ceiling.lights.map((light) => ({ ...light, id: uid("light") })) },
+        items: side.items.map((item) => ({ ...item, id: uid("copy"), channels: { ...item.channels } })),
+      };
+      return { ...current, sides: [...current.sides, copy] };
+    });
+  }
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeRun, setActiveRun] = useState(saved?.activeRun ?? "front");
   const [quote, setQuote] = useState<QuoteEntry[]>(saved?.quote ?? []);
@@ -134,7 +197,8 @@ export default function App() {
   const [customer, setCustomer] = useState<CustomerDetails>(() => loadCustomer());
   const [quoteNo, setQuoteNo] = useState(() => loadQuoteNo());
   const [fileMode, setFileMode] = useState<FileNameMode>(saved?.fileMode ?? "customer");
-  const [status, setStatus] = useState("Type the full size. The soft frame follows. Nothing is added to the quote until you confirm.");
+  const [status, setStatus] = useState("Type the full size. Add it to the quote when the frame is ready.");
+  const backupRef = useRef<HTMLInputElement>(null);
   const [ghost, setGhost] = useState<{ label: string; x: number; y: number } | null>(null);
   const [dimArmed, setDimArmed] = useState(false);
   const projectRef = useRef<(clientX: number, clientY: number) => number | null>(() => null);
@@ -370,6 +434,63 @@ export default function App() {
     setStatus(`Applied “${setup.name}”.`);
   }
 
+  function downloadBackup() {
+    const payload = {
+      app: BACKUP_APP,
+      version: 1,
+      savedAt: new Date().toISOString(),
+      unit,
+      quoteNo,
+      fileMode,
+      activeRun,
+      nextSerial,
+      editingSerial,
+      company,
+      customer,
+      draft,
+      quote,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = backupFileName(customer.name, quoteNo);
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus("Backup downloaded.");
+  }
+
+  function readBackup(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = parseBackup(JSON.parse(String(reader.result)));
+        if (!parsed) {
+          setStatus("This file is not a backup from this app.");
+          return;
+        }
+        history.current.past = [];
+        history.current.future = [];
+        setHistoryTick((tick) => tick + 1);
+        setUnit(parsed.unit);
+        setDraftState(parsed.draft);
+        setQuote(parsed.quote);
+        setNextSerial(parsed.nextSerial);
+        setEditingSerial(parsed.editingSerial);
+        setFileMode(parsed.fileMode);
+        setActiveRun(parsed.activeRun);
+        setCompany(parsed.company);
+        setCustomer(parsed.customer);
+        setQuoteNo(parsed.quoteNo);
+        setSelectedId(null);
+        setStatus("Backup loaded. You can keep editing.");
+      } catch {
+        setStatus("This file is not a backup from this app.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
   function paletteDown(event: ReactPointerEvent, kind: ItemKind) {
     event.preventDefault();
     pending.current = { kind, x: event.clientX, y: event.clientY, moved: false };
@@ -389,9 +510,7 @@ export default function App() {
           </div>
         </div>
         <p className="top-note" data-testid="serial-preview">
-          {editingSerial != null
-            ? `Editing S.No ${editingSerial}. Saving keeps this serial number and does not add a new row.`
-            : `Next shower will be S.No ${nextSerial}. Add it only when the frame is ready.`}
+          {editingSerial != null ? `Editing S.No ${editingSerial}` : `Next S.No ${nextSerial}`}
         </p>
         <div className="quote-tools">
           <label className="stack quote-unit">
@@ -408,724 +527,41 @@ export default function App() {
             Quote / Showers
             <span>{rows.length}</span>
           </button>
+          <p className="product-grand" data-testid="product-grand">
+            <span>Grand total {inr(quoteSubtotal(rows))}</span>
+            <span>GST 18% {inr(quoteSubtotal(rows) * GST_RATE)}</span>
+            <span>G.Total {inr(quoteSubtotal(rows) * (1 + GST_RATE))}</span>
+          </p>
           <button type="button" className="quote-launcher secondary" data-testid="generate-quote" onClick={() => setDocOpen(true)}>
             Generate quote
           </button>
           <button type="button" className="quote-launcher secondary" data-testid="new-quote" onClick={newQuote}>
             New quote
           </button>
+          <button type="button" className="top-mini" data-testid="download-backup" onClick={downloadBackup}>
+            Download backup
+          </button>
+          <button type="button" className="top-mini" data-testid="upload-backup" onClick={() => backupRef.current?.click()}>
+            Upload backup
+          </button>
+          <input
+            ref={backupRef}
+            data-testid="backup-file"
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) readBackup(file);
+            }}
+          />
         </div>
       </header>
 
       <aside className="panel controls">
-        <section>
-          <h2>Shower size</h2>
-          <div className="toggle" role="group" aria-label="Product">
-            <button type="button" data-testid="product-shower" aria-pressed={draft.product !== "cubicle"} onClick={() => setDraft((current) => normalizeShower({ ...current, product: "shower" satisfies ProductKind }))}>Shower</button>
-            <button type="button" data-testid="product-cubicle" aria-pressed={draft.product === "cubicle"} onClick={() => setDraft((current) => normalizeShower({ ...current, product: "cubicle" satisfies ProductKind }))}>Cubicle</button>
-          </div>
-          {draft.product === "cubicle" && (
-            <div data-testid="cubicle-fields">
-              <p className="hint">Commercial cubicle. HPL sheets sit above the floor on legs, with a slim headrail. Shower glass stays available when you switch back.</p>
-              <div className="field-row">
-                <LengthField
-                  label="Bottom gap"
-                  testId="cubicle-gap"
-                  mm={draft.cubicle.gap}
-                  unit={unit}
-                  onChange={(mm) =>
-                    setDraft((current) =>
-                      normalizeShower({
-                        ...current,
-                        cubicle: {
-                          ...current.cubicle,
-                          gap: mm,
-                          legHeight: current.cubicle.legHeight === current.cubicle.gap ? mm : current.cubicle.legHeight,
-                        },
-                      }),
-                    )
-                  }
-                />
-                <LengthField label="Door top clearance" testId="cubicle-door-clear" mm={draft.cubicle.doorClearance} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, doorClearance: mm } }))} />
-              </div>
-              <div className="field-row">
-                <label className="stack">
-                  Legs
-                  <NumberField testId="cubicle-leg-qty" value={draft.cubicle.legQty} min={0} onChange={(legQty) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legQty } }))} />
-                </label>
-                <LengthField label="Leg height" testId="cubicle-leg-height" mm={draft.cubicle.legHeight} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legHeight: mm } }))} />
-              </div>
-              <label className="stack">
-                Leg material
-                <select data-testid="cubicle-leg-material" value={draft.cubicle.legMaterial} onChange={(event) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legMaterial: event.target.value as LegMaterial } }))}>
-                  <option value="SS305">SS305</option>
-                  <option value="Nylon">Nylon</option>
-                  <option value="Iron">Iron</option>
-                  <option value="Aluminium">Aluminium</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              <label className="stack">
-                Custom leg name
-                <input data-testid="cubicle-leg-name" value={draft.cubicle.legName} placeholder="Type a material name" onChange={(event) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legName: event.target.value } }))} />
-              </label>
-              <label className="stack">
-                Leg rate
-                <NumberField testId="cubicle-leg-rate" value={draft.cubicle.legRate} onChange={(legRate) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legRate } }))} />
-              </label>
-              <div className="toggle" role="group" aria-label="Top rail">
-                <button type="button" data-testid="rail-aluminium" aria-pressed={draft.cubicle.railMaterial !== "SS"} onClick={() => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, railMaterial: "Aluminium" satisfies RailMaterial } }))}>Aluminium</button>
-                <button type="button" data-testid="rail-ss" aria-pressed={draft.cubicle.railMaterial === "SS"} onClick={() => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, railMaterial: "SS" satisfies RailMaterial } }))}>SS</button>
-              </div>
-              <label className="stack">
-                Top rail rate
-                <NumberField testId="cubicle-rail-rate" value={draft.cubicle.railRate} onChange={(railRate) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, railRate } }))} />
-              </label>
-            </div>
-          )}
-          <p className="hint">Any size, for every layout. Every size in this quote uses the one unit in the corner. Switching it converts the numbers already entered.</p>
-          <div className="field-row">
-            <LengthField label="Width" testId="width-input" mm={draft.width} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, width: Math.max(10, mm) }))} />
-            <LengthField label="Height" testId="height-input" mm={draft.height} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, height: Math.max(10, mm) }))} />
-          </div>
-          <LengthField label="Bathroom depth" testId="depth-input" mm={draft.depth} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, depth: Math.max(0, mm) }))} />
-          <label className="stack">
-            Location
-            <input
-              data-testid="location-input"
-              value={draft.location}
-              placeholder="MBR, CMR, Parents bedroom"
-              onChange={(event) => setDraft((current) => ({ ...current, location: event.target.value }))}
-            />
-          </label>
-          <label className="check depth-check">
-            <input
-              data-testid="use-depth"
-              type="checkbox"
-              checked={draft.useDepth}
-              onChange={(event) => setDraft((current) => ({ ...current, useDepth: event.target.checked }))}
-            />
-            Show bathroom depth
-          </label>
-          <p className="balance-panel" data-testid="balance-width">
-            Opening {formatLength(draft.width, unit)} {unit}
-            {" · "}Used {formatLength(usedWidth(draft.items), unit)} {unit}
-            {" · "}Balance {formatLength(balanceWidth(draft.width, draft.items), unit)} {unit}
-          </p>
-          <p className="hint" data-testid="area-balance">
-            Area designed {designedSqFt(draft).toFixed(2)} sq ft of {openingSqFt(draft.width, draft.height).toFixed(2)} sq ft opening. Each added piece keeps its own size in the list below. The dashed gap on the drawing is the width still left.
-          </p>
-        </section>
-
-        <section>
-          <h2>Palette</h2>
-          {(draft.sides.length > 0 || activeRun !== "front") && (
-            <>
-              <p className="hint">Choose the front or a return side. Fixed, door, and wall drop onto that run. The preview shows every side that has glass.</p>
-              <div className="run-switch" role="group" aria-label="Which run">
-                <button type="button" data-testid="run-front" aria-pressed={activeRun === "front"} onClick={() => { setActiveRun("front"); setSelectedId(null); }}>
-                  Front
-                </button>
-                {draft.sides.map((side) => (
-                  <button
-                    key={side.id}
-                    type="button"
-                    data-testid="run-side"
-                    aria-pressed={activeRun === side.id}
-                    onClick={() => { setActiveRun(side.id); setSelectedId(null); }}
-                  >
-                    {side.name}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          {activeSide && (
-            <div className="side-box">
-              <PartitionFields
-                side={activeSide}
-                shower={draft}
-                unit={unit}
-                onChange={(patch) => setDraft((current) => updateSide(current, activeSide.id, patch))}
-                onRemove={() => { setDraft((current) => removeSide(current, activeSide.id)); setActiveRun("front"); }}
-              />
-            </div>
-          )}
-          <div className="palette">
-            {PALETTE.map((item) => (
-              <div key={item.kind} className="palette-item" data-testid={`palette-${item.kind}`} onPointerDown={(event) => paletteDown(event, item.kind)}>
-                <strong>{item.label}</strong>
-                <span>{item.note}</span>
-              </div>
-            ))}
-          </div>
-          <div className="row-actions three">
-            <button type="button" data-testid="add-fixed" onClick={() => addKind("fixed")}>Add fixed</button>
-            <button type="button" data-testid="add-door" onClick={() => addKind("door")}>Add door</button>
-            <button type="button" data-testid="add-wall" onClick={() => addKind("wall")}>Add wall</button>
-          </div>
-          <div className="row-actions">
-            <button type="button" data-testid="add-return" onClick={() => addKind("return")}>Add return</button>
-            <button
-              type="button"
-              data-testid="clear-items"
-              onClick={() => {
-                setDraft((current) =>
-                  activeRun === "front"
-                    ? { ...current, items: [] }
-                    : { ...current, sides: current.sides.map((side) => (side.id === activeRun ? { ...side, items: [] } : side)) },
-                );
-                setSelectedId(null);
-              }}
-            >
-              Clear frame
-            </button>
-          </div>
-          {draft.items.length + draft.sides.reduce((sum, side) => sum + side.items.length, 0) > 0 && (
-            <ul className="item-list">
-              {draft.items.map((item) => (
-                <li key={item.id}>
-                  <button type="button" data-testid="item-select" data-kind={item.kind} data-id={item.id} aria-pressed={item.id === selectedId} onClick={() => { setActiveRun("front"); setSelectedId(item.id); }}>
-                    Front · {itemTitle(item)} · {formatLength(item.width, unit)} {unit}
-                  </button>
-                </li>
-              ))}
-              {draft.sides.map((side) =>
-                side.items.map((item) => (
-                  <li key={item.id}>
-                    <button type="button" data-testid="item-select" data-kind={item.kind} data-id={item.id} aria-pressed={item.id === selectedId} onClick={() => { setActiveRun(side.id); setSelectedId(item.id); }}>
-                      {side.name} · {itemTitle(item)} · {formatLength(item.width, unit)} {unit}
-                    </button>
-                  </li>
-                )),
-              )}
-            </ul>
-          )}
-        </section>
-
-        <section>
-          <h2>Top fixed glass</h2>
-          <p className="hint">Optional lite inside the overall height. It can be full width, the same width as the fixed panel or the door below it, or a custom width.</p>
-          {draft.topFixed.enabled ? (
-            <>
-              <LengthField
-                label="Top height"
-                testId="top-fixed-height"
-                mm={draft.topFixed.height}
-                unit={unit}
-                onChange={(mm) =>
-                  setDraft((current) => ({
-                    ...current,
-                    topFixed: { ...current.topFixed, height: clamp(mm, 10, Math.max(10, current.height - 40)) },
-                  }))
-                }
-              />
-              <label className="stack">
-                Width
-                <select
-                  data-testid="top-fixed-span"
-                  value={draft.topFixed.span}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      topFixed: { ...current.topFixed, span: event.target.value as TopSpan },
-                    }))
-                  }
-                >
-                  <option value="full">Full width (poora)</option>
-                  <option value="fixed">Match the fixed panel below</option>
-                  <option value="door">Match the door below</option>
-                  <option value="custom">Custom width and position</option>
-                </select>
-              </label>
-              {draft.topFixed.span === "fixed" && (
-                <AlignPick
-                  testId="top-fixed-align"
-                  items={fixedChoices}
-                  value={draft.topFixed.alignId}
-                  unit={unit}
-                  empty="Add a fixed panel to match."
-                  onChange={(alignId) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, alignId } }))}
-                />
-              )}
-              {draft.topFixed.span === "door" && (
-                <AlignPick
-                  testId="top-fixed-align"
-                  items={doorChoices}
-                  value={draft.topFixed.alignId}
-                  unit={unit}
-                  empty="Add a door to match."
-                  onChange={(alignId) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, alignId } }))}
-                />
-              )}
-              {draft.topFixed.span === "custom" && (
-                <div className="field-row">
-                  <LengthField label="Position" testId="top-fixed-x" mm={draft.topFixed.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, x: mm } }))} />
-                  <LengthField label="Custom width" testId="top-fixed-width-input" mm={draft.topFixed.width || draft.width} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, width: mm } }))} />
-                </div>
-              )}
-              <ChannelFields
-                channels={draft.topFixed.channels}
-                testPrefix="top-fixed-channel"
-                onChange={(channels) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, channels } }))}
-              />
-              <button type="button" data-testid="remove-top-fixed" onClick={() => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, enabled: false } }))}>
-                Remove top fixed
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              data-testid="add-top-fixed"
-              onClick={() =>
-                setDraft((current) => ({
-                  ...current,
-                  topFixed: {
-                    ...current.topFixed,
-                    enabled: true,
-                    auto: false,
-                    span: current.topFixed.span || "full",
-                    height: clamp(Math.round(current.height * 0.18), 80, Math.max(80, current.height - 200)),
-                    width: current.topFixed.width || current.width,
-                  },
-                }))
-              }
-            >
-              Add top fixed
-            </button>
-          )}
-        </section>
-
-        <section>
-          <h2>Item</h2>
-          <p className="hint">Click a door, fixed panel, wall, WC, or shower on the drawing. Its tools open on the drawing.</p>
-          <div className="toggle">
-            <button type="button" data-testid="add-wc" onClick={() => placeFixture("wc")}>{draft.wc.enabled ? "Edit WC" : "Add WC"}</button>
-            <button type="button" data-testid="add-shower" onClick={() => placeFixture("shower")}>{draft.showerPoint.enabled ? "Edit shower" : "Add shower"}</button>
-          </div>
-        </section>
-
-        <section>
-          <h2>Material</h2>
-          <div className="toggle" role="group" aria-label="Finish">
-            <button type="button" data-testid="finish-profile" aria-pressed={draft.material.finish === "profile"} onClick={() => setMaterial({ finish: "profile" satisfies Finish })}>Profiles</button>
-            <button type="button" data-testid="finish-glass" aria-pressed={draft.material.finish === "glass"} onClick={() => setMaterial({ finish: "glass" })}>Glass only</button>
-          </div>
-          <div className="field-row">
-            <LengthField label="Face" testId="profile-face" mm={draft.material.profileFace} unit={unit} onChange={(mm) => setProfilePart("profileFace", mm)} />
-            <LengthField label="Depth of profile" testId="profile-depth" mm={draft.material.profileDepth} unit={unit} onChange={(mm) => setProfilePart("profileDepth", mm)} />
-          </div>
-          <p className="hint">16 mm is the face. 45 mm is the profile depth. Each corner is a straight 45° cut across that face.</p>
-          <label className="stack">
-            Profile name
-            <input data-testid="profile-name" value={draft.material.profileName} onChange={(event) => setMaterial({ profileName: event.target.value })} />
-          </label>
-          <ColourField label="Colour" testId="colour" value={draft.material.colour} onChange={(colour) => setMaterial({ colour })} />
-          <div className="toggle" role="group" aria-label="Origin">
-            <button type="button" data-testid="origin-imported" aria-pressed={draft.material.origin === "Imported"} onClick={() => setMaterial({ origin: "Imported" satisfies Origin })}>Imported</button>
-            <button type="button" data-testid="origin-indian" aria-pressed={draft.material.origin === "Indian"} onClick={() => setMaterial({ origin: "Indian" })}>Indian</button>
-          </div>
-          <div className="toggle" role="group" aria-label="Infill">
-            <button type="button" data-testid="infill-glass" aria-pressed={draft.material.infill === "glass"} onClick={() => setMaterial({ infill: "glass" satisfies Infill })}>Glass</button>
-            <button type="button" data-testid="infill-sheet" aria-pressed={draft.material.infill === "sheet"} onClick={() => setMaterial({ infill: "sheet" })}>Sheet</button>
-          </div>
-          {draft.material.infill === "glass" ? (
-            <SpecFields
-              title="Glass specification"
-              spec={draft.material.glass}
-              testPrefix="glass"
-              onChange={(glass) => setMaterial({ glass })}
-            />
-          ) : (
-            <>
-              <SpecFields
-                title="Sheet specification"
-                spec={draft.material.sheet}
-                testPrefix="sheet"
-                onChange={(sheet) => setMaterial({ sheet: { ...draft.material.sheet, ...sheet } })}
-              />
-              <label className="stack">
-                Metal / material
-                <input data-testid="sheet-metal" value={draft.material.sheet.metal} onChange={(event) => setMaterial({ sheet: { ...draft.material.sheet, metal: event.target.value } })} />
-              </label>
-              <label className="stack">
-                Sheet colour
-                <input data-testid="sheet-colour" value={draft.material.sheet.colour} onChange={(event) => setMaterial({ sheet: { ...draft.material.sheet, colour: event.target.value } })} />
-              </label>
-              <label className="stack">
-                Sheet rate
-                <span className="unit">
-                  ₹
-                  <NumberField
-                    testId="sheet-rate"
-                    value={draft.material.sheet.ratePerSqFt}
-                    onChange={(next) => setDraft((current) => applySheetRate(current, next))}
-                  />
-                </span>
-              </label>
-              <p className="hint">Sheet rate fills fixed, door, return, and top fixed. Change a part below if that part should differ. Ceiling keeps its own rate.</p>
-            </>
-          )}
-          <label className="stack">
-            Hardware
-            <input data-testid="hardware-name" value={draft.material.hardware} onChange={(event) => setMaterial({ hardware: event.target.value })} />
-          </label>
-          <label className="check depth-check">
-            <input
-              data-testid="hardware-match"
-              type="checkbox"
-              checked={draft.material.hardwareMatchProfile}
-              onChange={(event) => {
-                const on = event.target.checked;
-                setMaterial(
-                  on
-                    ? { hardwareMatchProfile: true }
-                    : { hardwareMatchProfile: false, hardwareColourName: draft.material.hardwareColourName || draft.material.colour },
-                );
-              }}
-            />
-            Same colour as profile
-          </label>
-          {!draft.material.hardwareMatchProfile && (
-            <>
-              <ColourField
-                label="Hardware colour"
-                testId="hardware-colour"
-                value={draft.material.hardwareColour}
-                onChange={(hardwareColour) => setMaterial({ hardwareColour, hardwareColourName: hardwareColour })}
-              />
-              <label className="stack">
-                Colour name
-                <input
-                  data-testid="hardware-colour-name"
-                  value={draft.material.hardwareColourName}
-                  placeholder="Grey, Brush Gold, or a typed name"
-                  onChange={(event) => setMaterial({ hardwareColourName: event.target.value })}
-                />
-              </label>
-            </>
-          )}
-          <h3 className="subhead">Rate per sq ft</h3>
-          <p className="hint">The glass amount is the actual area times this rate. Wastage is the standard sheet area minus that actual area, at the same rate unless you untick it. Handles, locks, and extra work stay as their own lines.</p>
-          <label className="stack">
-            Rate per sq ft
-            <span className="unit">
-              ₹
-              <NumberField testId="rate-per-sqft" value={draft.material.ratePerSqFt} onChange={(next) => setMaterial({ ratePerSqFt: next })} />
-            </span>
-          </label>
-          <p className="hint" data-testid="package-size-ref">
-            Size {sizeLabel(draft, unit)} · actual {actualSqFt(draft).toFixed(2)} sq ft · wastage {wastageExtraSqFt(draft).toFixed(2)} sq ft · glass {inr(productGlassAmount(draft))} · wastage {inr(wastageAmountOf(draft))}
-          </p>
-          <p className="hint">Rate {inr(productRate(draft))} per sq ft</p>
-          <label className="check depth-check">
-            <input
-              data-testid="ceiling-toggle"
-              type="checkbox"
-              checked={draft.ceiling.enabled}
-              onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, enabled: event.target.checked }, useDepth: current.useDepth || event.target.checked }))}
-            />
-            Ceiling
-          </label>
-            {draft.ceiling.enabled && (
-            <div data-testid="ceiling-options">
-              <div className="field-row">
-                <label className="stack">
-                  Ceiling material
-                  <input data-testid="ceiling-material" value={draft.ceiling.materialName} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, materialName: event.target.value } }))} />
-                </label>
-                <label className="stack">
-                  Ceiling colour
-                  <input data-testid="ceiling-colour" value={draft.ceiling.colour} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, colour: event.target.value } }))} />
-                </label>
-              </div>
-              <label className="stack">
-                Panel module
-                <select
-                  data-testid="ceiling-module"
-                  value={draft.ceiling.customModule ? "custom" : String(draft.ceiling.moduleFt)}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setDraft((current) => ({
-                      ...current,
-                      ceiling: {
-                        ...current.ceiling,
-                        customModule: value === "custom",
-                        moduleFt: value === "custom" ? current.ceiling.moduleFt : Number(value),
-                      },
-                    }));
-                  }}
-                >
-                  {CEILING_MODULES.map((ft) => (
-                    <option key={ft} value={ft}>
-                      {ft} ft
-                    </option>
-                  ))}
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              {draft.ceiling.customModule && (
-                <LengthField
-                  label="Custom module"
-                  testId="ceiling-custom"
-                  mm={draft.ceiling.customModuleMm}
-                  unit={unit}
-                  onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, customModuleMm: Math.max(50, mm), customModule: true } }))}
-                />
-              )}
-              <p className="hint">One side of each panel follows the opening. The other side is this module ({formatLength(ceilingModuleMm(draft.ceiling), unit)} {unit}).</p>
-              <div className="toggle" role="group" aria-label="Ceiling direction">
-                <button type="button" data-testid="ceiling-along-width" aria-pressed={draft.ceiling.along === "width"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, along: "width" satisfies CeilingAlong } }))}>
-                  Along width
-                </button>
-                <button type="button" data-testid="ceiling-along-depth" aria-pressed={draft.ceiling.along === "depth"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, along: "depth" satisfies CeilingAlong } }))}>
-                  Along depth
-                </button>
-              </div>
-              <div className="toggle" role="group" aria-label="Ceiling finish">
-                <button type="button" data-testid="ceiling-wood" aria-pressed={draft.ceiling.finishKind === "wood"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishKind: "wood" satisfies CeilingFinishKind, finishId: "oak" } }))}>
-                  Wood
-                </button>
-                <button type="button" data-testid="ceiling-plain" aria-pressed={draft.ceiling.finishKind === "plain"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishKind: "plain" satisfies CeilingFinishKind, finishId: "white" } }))}>
-                  Plain
-                </button>
-              </div>
-              <div className="finish-swatches">
-                {(draft.ceiling.finishKind === "wood" ? WOOD_FINISHES : PLAIN_FINISHES).map((finish) => (
-                  <button
-                    key={finish.id}
-                    type="button"
-                    data-testid={`ceiling-finish-${finish.id}`}
-                    aria-pressed={draft.ceiling.finishId === finish.id}
-                    className="swatch"
-                    style={{ background: finish.hex }}
-                    onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishId: finish.id } }))}
-                  >
-                    {finish.name}
-                  </button>
-                ))}
-              </div>
-              <h3 className="subhead">Lights</h3>
-              {draft.ceiling.lights.map((light) => (
-                <div key={light.id} className="side-box" data-testid="ceiling-light-row">
-                  <div className="field-row">
-                    <LengthField label="Position across" testId="light-x" mm={light.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, x: mm } : row)) } }))} />
-                    <LengthField label="Position back" testId="light-y" mm={light.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, y: mm } : row)) } }))} />
-                  </div>
-                  <LengthField label="Light size" testId="light-size" mm={light.size} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, size: mm } : row)) } }))} />
-                  <button type="button" onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.filter((row) => row.id !== light.id) } }))}>
-                    Remove light
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                data-testid="add-light"
-                onClick={() =>
-                  setDraft((current) => ({
-                    ...current,
-                    ceiling: {
-                      ...current.ceiling,
-                      lights: [...current.ceiling.lights, { id: uid("light"), x: Math.round(current.width / 2), y: Math.round(current.depth / 2), size: 180 }],
-                    },
-                  }))
-                }
-              >
-                Add light
-              </button>
-              <ChannelFields
-                channels={draft.ceiling.channels}
-                testPrefix="ceiling-channel"
-                onChange={(channels) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, channels } }))}
-              />
-              <div className="toggle" role="group" aria-label="Ceiling area">
-                <button type="button" data-testid="ceiling-room" aria-pressed={draft.ceiling.scope !== "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "room" } }))}>Whole room</button>
-                <button type="button" data-testid="ceiling-rect" aria-pressed={draft.ceiling.scope === "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "rect" } }))}>One area</button>
-              </div>
-              {draft.ceiling.scope === "rect" && (
-                <div className="field-row" data-testid="ceiling-rect-fields">
-                  <LengthField label="From left" testId="ceiling-rect-x" mm={draft.ceiling.rect.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, x: mm } } }))} />
-                  <LengthField label="From back" testId="ceiling-rect-y" mm={draft.ceiling.rect.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, y: mm } } }))} />
-                  <LengthField label="Width" testId="ceiling-rect-w" mm={draft.ceiling.rect.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, w: mm } } }))} />
-                  <LengthField label="Depth" testId="ceiling-rect-d" mm={draft.ceiling.rect.d} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, d: mm } } }))} />
-                  <LengthField label="Up / down" testId="ceiling-lift" mm={draft.ceiling.rect.lift} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, lift: mm } } }))} />
-                </div>
-              )}
-              <label className="check depth-check">
-                <input data-testid="ceiling-trap" type="checkbox" checked={draft.ceiling.trap.enabled} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, enabled: event.target.checked } } }))} />
-                Trap door
-              </label>
-              {draft.ceiling.trap.enabled && (
-                <div className="field-row">
-                  <LengthField label="Trap from left of ceiling" testId="trap-x" mm={draft.ceiling.trap.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, x: mm } } }))} />
-                  <LengthField label="Trap from back of ceiling" testId="trap-y" mm={draft.ceiling.trap.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, y: mm } } }))} />
-                  <LengthField label="Trap width" testId="trap-w" mm={draft.ceiling.trap.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, w: mm } } }))} />
-                  <LengthField label="Trap depth" testId="trap-h" mm={draft.ceiling.trap.h} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, h: mm } } }))} />
-                </div>
-              )}
-              <label className="stack">
-                Outside finish image
-                <input
-                  data-testid="ceiling-image-file"
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: String(reader.result || "") } }));
-                    reader.readAsDataURL(file);
-                  }}
-                />
-              </label>
-              {draft.ceiling.image && (
-                <button type="button" data-testid="ceiling-image-clear" onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: "" } }))}>Use named colour</button>
-              )}
-              <p className="hint">Panels follow the module size. Finish, lights, and panel joints show on the plan. Whole room covers the bathroom. One area covers the rectangle. A return can have its own ceiling.</p>
-            </div>
-          )}
-          <h3 className="subhead">Extra work</h3>
-          <label className="stack">
-            Extra work
-            <select
-              data-testid="extra-work"
-              value={draft.extraWork.kind}
-              onChange={(event) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, kind: event.target.value as ExtraWorkKind } }))}
-            >
-              {(Object.keys(EXTRA_LABEL) as ExtraWorkKind[]).map((kind) => (
-                <option key={kind} value={kind}>
-                  {EXTRA_LABEL[kind]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {draft.extraWork.kind !== "none" && (
-            <>
-              <label className="stack">
-                Extra glass area (sq ft)
-                <NumberField
-                  testId="extra-area"
-                  value={draft.extraWork.areaSqFt}
-                  onChange={(next) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, areaSqFt: next } }))}
-                />
-              </label>
-              <label className="stack">
-                Extra amount
-                <span className="unit">
-                  ₹
-                  <NumberField
-                    testId="extra-amount"
-                    value={draft.extraWork.amount}
-                    onChange={(next) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, amount: next } }))}
-                  />
-                </span>
-              </label>
-            </>
-          )}
-          <BillEditor shower={draft} unit={unit} onChange={setDraft} />
-          <p className="draft-total" data-testid="draft-amount">
-            {amount > 0 ? inr(amount) : inr(0)}
-          </p>
-        </section>
-
-        <section>
-          <h2>Saved setup</h2>
-          <p className="hint">Save profile, colour, origin, glass or sheet, hardware, and channel once, then reuse it.</p>
-          <label className="stack">
-            Name
-            <input data-testid="setup-name" value={setupName} placeholder="Standard matt black" onChange={(event) => setSetupName(event.target.value)} />
-          </label>
-          <div className="row-actions">
-            <button type="button" data-testid="save-setup" onClick={saveSetup}>Save setup</button>
-            <button type="button" data-testid="apply-setup" onClick={applySetup} disabled={!setupPick}>Apply saved setup</button>
-          </div>
-          <label className="stack">
-            Library
-            <select data-testid="setup-pick" value={setupPick} onChange={(event) => setSetupPick(event.target.value)}>
-              <option value="">Choose a setup</option>
-              {setups.map((setup) => (
-                <option key={setup.id} value={setup.id}>{setup.name}</option>
-              ))}
-            </select>
-          </label>
-        </section>
-
-        <section>
-          <h2>Optional starter</h2>
-          <p className="hint">Fills the current size. It does not lock the width, height, or depth.</p>
-          <div className="presets">
-            {[
-              ["single", "Fixed, door, fixed"],
-              ["openable", "Fixed and openable door"],
-              ["wall", "Wall with glass on top"],
-              ["return", "Front run plus a return"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                data-testid={`starter-${id}`}
-                onClick={() => {
-                  setDraft((current) => applyStarter(current, id));
-                  setSelectedId(null);
-                  if (id === "return") setActiveRun("front");
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="commit-block">
-          <label className="stack">
-            Notes
-            <textarea data-testid="shower-notes" rows={3} maxLength={NOTE_LIMIT} value={draft.notes} placeholder="Which sheet, which colour, or any other note" onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value.slice(0, NOTE_LIMIT) }))} />
-            <span className="hint">{draft.notes.length}/{NOTE_LIMIT}</span>
-          </label>
-          {editingSerial != null && (
-            <p className="edit-banner" data-testid="edit-banner">Editing S.No {editingSerial}. Saving keeps this serial number.</p>
-          )}
-          <button type="button" className="primary" data-testid="commit-quote" onClick={commitQuote}>
-            {editingSerial != null ? "Save update" : "Add to quote"}
-          </button>
-          {editingSerial != null && (
-            <button type="button" onClick={cancelEdit}>Cancel edit</button>
-          )}
-          <p className="hint" data-testid="status">{status}</p>
-        </section>
-      </aside>
-
-      <main className="panel stage">
-        <Drawing
-          shower={draft}
-          unit={unit}
-          selectedId={selectedId}
-          activeRun={activeRun}
-          onSelect={(id) => {
-            setSelectedId(id);
-            if (id && draft.sides.some((side) => side.id === id)) setActiveRun(id);
-          }}
-          onMove={(id, x) => setDraft((current) => moveItemX(current, id, x))}
-          onResize={(id, next) => setDraft((current) => patchItem(current, id, next))}
-          onResizeSide={(id, length) => setDraft((current) => updateSide(current, id, { length }))}
-          onMoveSide={(id, attachX) => setDraft((current) => updateSide(current, id, { attachX }))}
-          onMoveFixture={(kind, x, y) => patchFixture(kind, { x, y })}
-          projectRef={projectRef}
-          watermark={company.logo || BRAND_LOGO}
-          dimArmed={dimArmed}
-          onArmDim={() => setDimArmed((on) => !on)}
-          onAddDim={(dim: UserDim) => {
-            setDraft((current) => ({ ...current, dims: [...current.dims, dim] }));
-            setDimArmed(false);
-          }}
-          onMoveDim={(id, offset) => setDraft((current) => ({ ...current, dims: current.dims.map((dim) => (dim.id === id ? { ...dim, offset } : dim)) }))}
-          onNudgeLabel={(key, x, y) => setDraft((current) => ({ ...current, labelNudge: { ...current.labelNudge, [key]: { x, y } } }))}
-          onNudgeHandle={(id, part, x, y) =>
-            setDraft((current) => patchItem(current, id, part === "body" ? { handleDx: x, handleDy: y } : { handleLabelDx: x, handleLabelDy: y }))
-          }
-        />
         {draft.sides.some((side) => side.id === selectedId) && (
-          <aside className="item-float" data-testid="item-editor" aria-label="Partition">
+          <aside className="item-dock" data-testid="item-editor" aria-label="Partition">
             <h2>Partition</h2>
             <PartitionFields
               side={draft.sides.find((side) => side.id === selectedId)!}
@@ -1142,7 +578,7 @@ export default function App() {
           </aside>
         )}
         {(selectedId === WC_ID || selectedId === SHOWER_ID) && (
-          <aside className="item-float" data-testid="item-editor" aria-label={selectedId === WC_ID ? "WC" : "Shower"}>
+          <aside className="item-dock" data-testid="item-editor" aria-label={selectedId === WC_ID ? "WC" : "Shower"}>
             <h2>{selectedId === WC_ID ? "WC" : "Shower"}</h2>
             <FixturePlace
               kind={selectedId === WC_ID ? "wc" : "shower"}
@@ -1159,7 +595,7 @@ export default function App() {
           </aside>
         )}
         {selected && (
-          <aside className="item-float" data-testid="item-editor" aria-label={itemTitle(selected)}>
+          <aside className="item-dock" data-testid="item-editor" aria-label={itemTitle(selected)}>
             <h2>{itemTitle(selected)}</h2>
             <div key={selected.id}>
               <div className="field-row">
@@ -1308,6 +744,742 @@ export default function App() {
             </div>
           </aside>
         )}
+        <section>
+          <h2>Shower size</h2>
+          <div className="toggle" role="group" aria-label="Product">
+            <button type="button" data-testid="product-shower" aria-pressed={draft.product !== "cubicle"} onClick={() => setDraft((current) => normalizeShower({ ...current, product: "shower" satisfies ProductKind }))}>Shower</button>
+            <button type="button" data-testid="product-cubicle" aria-pressed={draft.product === "cubicle"} onClick={() => setDraft((current) => normalizeShower({ ...current, product: "cubicle" satisfies ProductKind }))}>Cubicle</button>
+          </div>
+          {draft.product === "cubicle" && (
+            <div data-testid="cubicle-fields">
+              <p className="hint">Cubicle: HPL on legs, slim headrail.</p>
+              <div className="field-row">
+                <LengthField
+                  label="Bottom gap"
+                  testId="cubicle-gap"
+                  mm={draft.cubicle.gap}
+                  unit={unit}
+                  onChange={(mm) =>
+                    setDraft((current) =>
+                      normalizeShower({
+                        ...current,
+                        cubicle: {
+                          ...current.cubicle,
+                          gap: mm,
+                          legHeight: current.cubicle.legHeight === current.cubicle.gap ? mm : current.cubicle.legHeight,
+                        },
+                      }),
+                    )
+                  }
+                />
+                <LengthField label="Door top clearance" testId="cubicle-door-clear" mm={draft.cubicle.doorClearance} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, doorClearance: mm } }))} />
+              </div>
+              <div className="field-row">
+                <label className="stack">
+                  Legs
+                  <NumberField testId="cubicle-leg-qty" value={draft.cubicle.legQty} min={0} onChange={(legQty) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legQty } }))} />
+                </label>
+                <LengthField label="Leg height" testId="cubicle-leg-height" mm={draft.cubicle.legHeight} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legHeight: mm } }))} />
+              </div>
+              <label className="stack">
+                Leg material
+                <select data-testid="cubicle-leg-material" value={draft.cubicle.legMaterial} onChange={(event) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legMaterial: event.target.value as LegMaterial } }))}>
+                  <option value="SS305">SS305</option>
+                  <option value="Nylon">Nylon</option>
+                  <option value="Iron">Iron</option>
+                  <option value="Aluminium">Aluminium</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <label className="stack">
+                Custom leg name
+                <input data-testid="cubicle-leg-name" value={draft.cubicle.legName} placeholder="Type a material name" onChange={(event) => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, legName: event.target.value } }))} />
+              </label>
+              <RateAmount
+                testId="cubicle-leg"
+                rateTestId="cubicle-leg-rate"
+                areaLabel="Legs"
+                basis={draft.cubicle.legQty}
+                rate={pricePair(draft.cubicle.legRate, draft.cubicle.legAmount, draft.cubicle.legQty, draft.cubicle.legPriceFrom).rate}
+                amount={pricePair(draft.cubicle.legRate, draft.cubicle.legAmount, draft.cubicle.legQty, draft.cubicle.legPriceFrom).amount}
+                onRate={(next) => setDraft((current) => ({ ...current, cubicle: { ...current.cubicle, legPriceFrom: "rate", legRate: money(next) } }))}
+                onAmount={(next) => setDraft((current) => ({ ...current, cubicle: { ...current.cubicle, legPriceFrom: "amount", legAmount: money(next) } }))}
+              />
+              <div className="toggle" role="group" aria-label="Top rail">
+                <button type="button" data-testid="rail-aluminium" aria-pressed={draft.cubicle.railMaterial !== "SS"} onClick={() => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, railMaterial: "Aluminium" satisfies RailMaterial } }))}>Aluminium</button>
+                <button type="button" data-testid="rail-ss" aria-pressed={draft.cubicle.railMaterial === "SS"} onClick={() => setDraft((current) => normalizeShower({ ...current, cubicle: { ...current.cubicle, railMaterial: "SS" satisfies RailMaterial } }))}>SS</button>
+              </div>
+              <RateAmount
+                testId="cubicle-rail"
+                rateTestId="cubicle-rail-rate"
+                areaLabel="Rail"
+                basis={1}
+                rate={pricePair(draft.cubicle.railRate, draft.cubicle.railAmount, 1, draft.cubicle.railPriceFrom).rate}
+                amount={pricePair(draft.cubicle.railRate, draft.cubicle.railAmount, 1, draft.cubicle.railPriceFrom).amount}
+                onRate={(next) => setDraft((current) => ({ ...current, cubicle: { ...current.cubicle, railPriceFrom: "rate", railRate: money(next) } }))}
+                onAmount={(next) => setDraft((current) => ({ ...current, cubicle: { ...current.cubicle, railPriceFrom: "amount", railAmount: money(next) } }))}
+              />
+            </div>
+          )}
+          <p className="hint">One unit for this quote. Changing it converts the numbers.</p>
+          <div className="field-row">
+            <LengthField label="Width" testId="width-input" mm={draft.width} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, width: Math.max(10, mm) }))} />
+            <LengthField label="Height" testId="height-input" mm={draft.height} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, height: Math.max(10, mm) }))} />
+          </div>
+          <LengthField label="Bathroom depth" testId="depth-input" mm={draft.depth} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, depth: Math.max(0, mm) }))} />
+          <label className="stack">
+            Location
+            <input
+              data-testid="location-input"
+              value={draft.location}
+              placeholder="MBR, CMR, Parents bedroom"
+              onChange={(event) => setDraft((current) => ({ ...current, location: event.target.value }))}
+            />
+          </label>
+          <label className="check depth-check">
+            <input
+              data-testid="use-depth"
+              type="checkbox"
+              checked={draft.useDepth}
+              onChange={(event) => setDraft((current) => ({ ...current, useDepth: event.target.checked }))}
+            />
+            Show bathroom depth
+          </label>
+          <p className="balance-panel" data-testid="balance-width">
+            Opening {formatLength(draft.width, unit)} {unit}
+            {" · "}Used {formatLength(usedWidth(draft.items), unit)} {unit}
+            {" · "}Balance {formatLength(balanceWidth(draft.width, draft.items), unit)} {unit}
+          </p>
+          <p className="hint" data-testid="area-balance">
+            Area designed {designedSqFt(draft).toFixed(2)} sq ft of {openingSqFt(draft.width, draft.height).toFixed(2)} sq ft opening. Each added piece keeps its own size in the list below. The dashed gap on the drawing is the width still left.
+          </p>
+        </section>
+
+        <section>
+          <h2>Palette</h2>
+          {(draft.sides.length > 0 || activeRun !== "front") && (
+            <>
+              <p className="hint">Front or a return. Pieces drop onto that run.</p>
+              <div className="run-switch" role="group" aria-label="Which run">
+                <button type="button" data-testid="run-front" aria-pressed={activeRun === "front"} onClick={() => { setActiveRun("front"); setSelectedId(null); }}>
+                  Front
+                </button>
+                {draft.sides.map((side) => (
+                  <button
+                    key={side.id}
+                    type="button"
+                    data-testid="run-side"
+                    aria-pressed={activeRun === side.id}
+                    onClick={() => { setActiveRun(side.id); setSelectedId(null); }}
+                  >
+                    {side.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {activeSide && (
+            <div className="side-box">
+              <PartitionFields
+                side={activeSide}
+                shower={draft}
+                unit={unit}
+                onChange={(patch) => setDraft((current) => updateSide(current, activeSide.id, patch))}
+                onRemove={() => { setDraft((current) => removeSide(current, activeSide.id)); setActiveRun("front"); }}
+              />
+            </div>
+          )}
+          <div className="palette">
+            {PALETTE.map((item) => (
+              <div key={item.kind} className="palette-item" data-testid={`palette-${item.kind}`} onPointerDown={(event) => paletteDown(event, item.kind)}>
+                <strong>{item.label}</strong>
+                <span>{item.note}</span>
+              </div>
+            ))}
+          </div>
+          <div className="row-actions three">
+            <button type="button" data-testid="add-fixed" onClick={() => addKind("fixed")}>Add fixed</button>
+            <button type="button" data-testid="add-door" onClick={() => addKind("door")}>Add door</button>
+            <button type="button" data-testid="add-wall" onClick={() => addKind("wall")}>Add wall</button>
+          </div>
+          <div className="row-actions">
+            <button type="button" data-testid="add-return" onClick={() => addKind("return")}>Add return</button>
+            <button
+              type="button"
+              data-testid="clear-items"
+              onClick={() => {
+                setDraft((current) =>
+                  activeRun === "front"
+                    ? { ...current, items: [] }
+                    : { ...current, sides: current.sides.map((side) => (side.id === activeRun ? { ...side, items: [] } : side)) },
+                );
+                setSelectedId(null);
+              }}
+            >
+              Clear frame
+            </button>
+          </div>
+          {draft.items.length + draft.sides.reduce((sum, side) => sum + side.items.length, 0) > 0 && (
+            <ul className="item-list">
+              {draft.items.map((item) => (
+                <li key={item.id}>
+                  <button type="button" data-testid="item-select" data-kind={item.kind} data-id={item.id} aria-pressed={item.id === selectedId} onClick={() => { setActiveRun("front"); setSelectedId(item.id); }}>
+                    Front · {itemTitle(item)} · {formatLength(item.width, unit)} {unit}
+                  </button>
+                </li>
+              ))}
+              {draft.sides.map((side) =>
+                side.items.map((item) => (
+                  <li key={item.id}>
+                    <button type="button" data-testid="item-select" data-kind={item.kind} data-id={item.id} aria-pressed={item.id === selectedId} onClick={() => { setActiveRun(side.id); setSelectedId(item.id); }}>
+                      {side.name} · {itemTitle(item)} · {formatLength(item.width, unit)} {unit}
+                    </button>
+                  </li>
+                )),
+              )}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <h2>Top fixed glass</h2>
+          <p className="hint">Optional lite. Full width, match below, or a custom width.</p>
+          {draft.topFixed.enabled ? (
+            <>
+              <LengthField
+                label="Top height"
+                testId="top-fixed-height"
+                mm={draft.topFixed.height}
+                unit={unit}
+                onChange={(mm) =>
+                  setDraft((current) => ({
+                    ...current,
+                    topFixed: { ...current.topFixed, height: clamp(mm, 10, Math.max(10, current.height - 40)) },
+                  }))
+                }
+              />
+              <label className="stack">
+                Width
+                <select
+                  data-testid="top-fixed-span"
+                  value={draft.topFixed.span}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      topFixed: { ...current.topFixed, span: event.target.value as TopSpan },
+                    }))
+                  }
+                >
+                  <option value="full">Full width (poora)</option>
+                  <option value="fixed">Match the fixed panel below</option>
+                  <option value="door">Match the door below</option>
+                  <option value="custom">Custom width and position</option>
+                </select>
+              </label>
+              {draft.topFixed.span === "fixed" && (
+                <AlignPick
+                  testId="top-fixed-align"
+                  items={fixedChoices}
+                  value={draft.topFixed.alignId}
+                  unit={unit}
+                  empty="Add a fixed panel to match."
+                  onChange={(alignId) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, alignId } }))}
+                />
+              )}
+              {draft.topFixed.span === "door" && (
+                <AlignPick
+                  testId="top-fixed-align"
+                  items={doorChoices}
+                  value={draft.topFixed.alignId}
+                  unit={unit}
+                  empty="Add a door to match."
+                  onChange={(alignId) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, alignId } }))}
+                />
+              )}
+              {draft.topFixed.span === "custom" && (
+                <div className="field-row">
+                  <LengthField label="Position" testId="top-fixed-x" mm={draft.topFixed.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, x: mm } }))} />
+                  <LengthField label="Custom width" testId="top-fixed-width-input" mm={draft.topFixed.width || draft.width} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, width: mm } }))} />
+                </div>
+              )}
+              <ChannelFields
+                channels={draft.topFixed.channels}
+                testPrefix="top-fixed-channel"
+                onChange={(channels) => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, channels } }))}
+              />
+              <button type="button" data-testid="remove-top-fixed" onClick={() => setDraft((current) => ({ ...current, topFixed: { ...current.topFixed, enabled: false } }))}>
+                Remove top fixed
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              data-testid="add-top-fixed"
+              onClick={() =>
+                setDraft((current) => ({
+                  ...current,
+                  topFixed: {
+                    ...current.topFixed,
+                    enabled: true,
+                    auto: false,
+                    span: current.topFixed.span || "full",
+                    height: clamp(Math.round(current.height * 0.18), 80, Math.max(80, current.height - 200)),
+                    width: current.topFixed.width || current.width,
+                  },
+                }))
+              }
+            >
+              Add top fixed
+            </button>
+          )}
+        </section>
+
+        <section>
+          <h2>Item</h2>
+          <p className="hint">Click a door, fixed, wall, WC, or shower. Tools open here.</p>
+          <div className="toggle">
+            <button type="button" data-testid="add-wc" onClick={() => placeFixture("wc")}>{draft.wc.enabled ? "Edit WC" : "Add WC"}</button>
+            <button type="button" data-testid="add-shower" onClick={() => placeFixture("shower")}>{draft.showerPoint.enabled ? "Edit shower" : "Add shower"}</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Material</h2>
+          <div className="toggle" role="group" aria-label="Finish">
+            <button type="button" data-testid="finish-profile" aria-pressed={draft.material.finish === "profile"} onClick={() => setMaterial({ finish: "profile" satisfies Finish })}>Profiles</button>
+            <button type="button" data-testid="finish-glass" aria-pressed={draft.material.finish === "glass"} onClick={() => setMaterial({ finish: "glass" })}>Glass only</button>
+          </div>
+          <div className="field-row">
+            <LengthField label="Face" testId="profile-face" mm={draft.material.profileFace} unit={unit} onChange={(mm) => setProfilePart("profileFace", mm)} />
+            <LengthField label="Depth of profile" testId="profile-depth" mm={draft.material.profileDepth} unit={unit} onChange={(mm) => setProfilePart("profileDepth", mm)} />
+          </div>
+          <p className="hint">Face 16 mm. Depth 45 mm. Corners are 45°.</p>
+          <label className="stack">
+            Profile name
+            <input data-testid="profile-name" value={draft.material.profileName} onChange={(event) => setMaterial({ profileName: event.target.value })} />
+          </label>
+          <ColourField label="Colour" testId="colour" value={draft.material.colour} onChange={(colour) => setMaterial({ colour })} />
+          <div className="toggle" role="group" aria-label="Origin">
+            <button type="button" data-testid="origin-imported" aria-pressed={draft.material.origin === "Imported"} onClick={() => setMaterial({ origin: "Imported" satisfies Origin })}>Imported</button>
+            <button type="button" data-testid="origin-indian" aria-pressed={draft.material.origin === "Indian"} onClick={() => setMaterial({ origin: "Indian" })}>Indian</button>
+          </div>
+          <div className="toggle" role="group" aria-label="Infill">
+            <button type="button" data-testid="infill-glass" aria-pressed={draft.material.infill === "glass"} onClick={() => setMaterial({ infill: "glass" satisfies Infill })}>Glass</button>
+            <button type="button" data-testid="infill-sheet" aria-pressed={draft.material.infill === "sheet"} onClick={() => setMaterial({ infill: "sheet" })}>Sheet</button>
+          </div>
+          {draft.material.infill === "glass" ? (
+            <SpecFields
+              title="Glass specification"
+              spec={draft.material.glass}
+              testPrefix="glass"
+              onChange={(glass) => setMaterial({ glass })}
+            />
+          ) : (
+            <>
+              <SpecFields
+                title="Sheet specification"
+                spec={draft.material.sheet}
+                testPrefix="sheet"
+                onChange={(sheet) => setMaterial({ sheet: { ...draft.material.sheet, ...sheet } })}
+              />
+              <label className="stack">
+                Metal / material
+                <input data-testid="sheet-metal" value={draft.material.sheet.metal} onChange={(event) => setMaterial({ sheet: { ...draft.material.sheet, metal: event.target.value } })} />
+              </label>
+              <label className="stack">
+                Sheet colour
+                <input data-testid="sheet-colour" value={draft.material.sheet.colour} onChange={(event) => setMaterial({ sheet: { ...draft.material.sheet, colour: event.target.value } })} />
+              </label>
+              <p className="hint">Sheet price is the rate row. Ceiling has its own rate.</p>
+            </>
+          )}
+          <label className="stack">
+            Hardware
+            <input data-testid="hardware-name" value={draft.material.hardware} onChange={(event) => setMaterial({ hardware: event.target.value })} />
+          </label>
+          <label className="check depth-check">
+            <input
+              data-testid="hardware-match"
+              type="checkbox"
+              checked={draft.material.hardwareMatchProfile}
+              onChange={(event) => {
+                const on = event.target.checked;
+                setMaterial(
+                  on
+                    ? { hardwareMatchProfile: true }
+                    : { hardwareMatchProfile: false, hardwareColourName: draft.material.hardwareColourName || draft.material.colour },
+                );
+              }}
+            />
+            Same colour as profile
+          </label>
+          {!draft.material.hardwareMatchProfile && (
+            <>
+              <ColourField
+                label="Hardware colour"
+                testId="hardware-colour"
+                value={draft.material.hardwareColour}
+                onChange={(hardwareColour) => setMaterial({ hardwareColour, hardwareColourName: hardwareColour })}
+              />
+              <label className="stack">
+                Colour name
+                <input
+                  data-testid="hardware-colour-name"
+                  value={draft.material.hardwareColourName}
+                  placeholder="Grey, Brush Gold, or a typed name"
+                  onChange={(event) => setMaterial({ hardwareColourName: event.target.value })}
+                />
+              </label>
+            </>
+          )}
+          <h3 className="subhead">Rate and amount</h3>
+          <p className="hint" data-testid="package-size-ref">
+            {actualSqFt(draft).toFixed(2)} sq ft · {sqmFromSqFt(actualSqFt(draft)).toFixed(2)} sq m
+          </p>
+          <RateAmount
+            testId="glass"
+            rateTestId="rate-per-sqft"
+            areaLabel="Glass"
+            basis={actualSqFt(draft)}
+            rate={glassPrice(draft).rate}
+            amount={glassPrice(draft).amount}
+            onRate={(next) =>
+              setDraft((current) => ({
+                ...current,
+                glassPriceFrom: "rate",
+                material: {
+                  ...current.material,
+                  ratePerSqFt: money(next),
+                  sheet: { ...current.material.sheet, ratePerSqFt: money(next) },
+                },
+              }))
+            }
+            onAmount={(next) => setDraft((current) => ({ ...current, glassPriceFrom: "amount", packageAmount: money(next) }))}
+          />
+          <label className="check depth-check">
+            <input
+              data-testid="ceiling-toggle"
+              type="checkbox"
+              checked={draft.ceiling.enabled}
+              onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, enabled: event.target.checked }, useDepth: current.useDepth || event.target.checked }))}
+            />
+            Ceiling
+          </label>
+            {draft.ceiling.enabled && (
+            <div data-testid="ceiling-options">
+              <LengthField label="Level" testId="ceiling-level" mm={draft.ceiling.level} unit={unit} minMm={-4000} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, level: mm } }))} />
+              <div className="field-row">
+                <label className="stack">
+                  Ceiling material
+                  <input data-testid="ceiling-material" value={draft.ceiling.materialName} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, materialName: event.target.value } }))} />
+                </label>
+                <label className="stack">
+                  Ceiling colour
+                  <input data-testid="ceiling-colour" value={draft.ceiling.colour} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, colour: event.target.value } }))} />
+                </label>
+              </div>
+              <label className="stack">
+                Panel module
+                <select
+                  data-testid="ceiling-module"
+                  value={draft.ceiling.customModule ? "custom" : String(draft.ceiling.moduleFt)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setDraft((current) => ({
+                      ...current,
+                      ceiling: {
+                        ...current.ceiling,
+                        customModule: value === "custom",
+                        moduleFt: value === "custom" ? current.ceiling.moduleFt : Number(value),
+                      },
+                    }));
+                  }}
+                >
+                  {CEILING_MODULES.map((ft) => (
+                    <option key={ft} value={ft}>
+                      {ft} ft
+                    </option>
+                  ))}
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              {draft.ceiling.customModule && (
+                <LengthField
+                  label="Custom module"
+                  testId="ceiling-custom"
+                  mm={draft.ceiling.customModuleMm}
+                  unit={unit}
+                  onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, customModuleMm: Math.max(50, mm), customModule: true } }))}
+                />
+              )}
+              <p className="hint">One side follows the opening. The other is {formatLength(ceilingModuleMm(draft.ceiling), unit)} {unit}.</p>
+              <div className="toggle" role="group" aria-label="Ceiling direction">
+                <button type="button" data-testid="ceiling-along-width" aria-pressed={draft.ceiling.along === "width"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, along: "width" satisfies CeilingAlong } }))}>
+                  Along width
+                </button>
+                <button type="button" data-testid="ceiling-along-depth" aria-pressed={draft.ceiling.along === "depth"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, along: "depth" satisfies CeilingAlong } }))}>
+                  Along depth
+                </button>
+              </div>
+              <div className="toggle" role="group" aria-label="Ceiling finish">
+                <button type="button" data-testid="ceiling-wood" aria-pressed={draft.ceiling.finishKind === "wood"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishKind: "wood" satisfies CeilingFinishKind, finishId: "oak" } }))}>
+                  Wood
+                </button>
+                <button type="button" data-testid="ceiling-plain" aria-pressed={draft.ceiling.finishKind === "plain"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishKind: "plain" satisfies CeilingFinishKind, finishId: "white" } }))}>
+                  Plain
+                </button>
+              </div>
+              <div className="finish-swatches">
+                {(draft.ceiling.finishKind === "wood" ? WOOD_FINISHES : PLAIN_FINISHES).map((finish) => (
+                  <button
+                    key={finish.id}
+                    type="button"
+                    data-testid={`ceiling-finish-${finish.id}`}
+                    aria-pressed={draft.ceiling.finishId === finish.id}
+                    className="swatch"
+                    style={{ background: finish.hex }}
+                    onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, finishId: finish.id } }))}
+                  >
+                    {finish.name}
+                  </button>
+                ))}
+              </div>
+              <h3 className="subhead">Lights</h3>
+              {draft.ceiling.lights.map((light) => (
+                <div key={light.id} className="side-box" data-testid="ceiling-light-row">
+                  <div className="field-row">
+                    <LengthField label="Position across" testId="light-x" mm={light.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, x: mm } : row)) } }))} />
+                    <LengthField label="Position back" testId="light-y" mm={light.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, y: mm } : row)) } }))} />
+                  </div>
+                  <LengthField label="Light size" testId="light-size" mm={light.size} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.map((row) => (row.id === light.id ? { ...row, size: mm } : row)) } }))} />
+                  <button type="button" onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, lights: current.ceiling.lights.filter((row) => row.id !== light.id) } }))}>
+                    Remove light
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                data-testid="add-light"
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    ceiling: {
+                      ...current.ceiling,
+                      lights: [...current.ceiling.lights, { id: uid("light"), x: Math.round(current.width / 2), y: Math.round(current.depth / 2), size: 180 }],
+                    },
+                  }))
+                }
+              >
+                Add light
+              </button>
+              <ChannelFields
+                channels={draft.ceiling.channels}
+                testPrefix="ceiling-channel"
+                onChange={(channels) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, channels } }))}
+              />
+              <div className="toggle" role="group" aria-label="Ceiling area">
+                <button type="button" data-testid="ceiling-room" aria-pressed={draft.ceiling.scope !== "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "room" } }))}>Whole room</button>
+                <button type="button" data-testid="ceiling-rect" aria-pressed={draft.ceiling.scope === "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "rect" } }))}>One area</button>
+              </div>
+              {draft.ceiling.scope === "rect" && (
+                <div className="field-row" data-testid="ceiling-rect-fields">
+                  <LengthField label="From left" testId="ceiling-rect-x" mm={draft.ceiling.rect.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, x: mm } } }))} />
+                  <LengthField label="From back" testId="ceiling-rect-y" mm={draft.ceiling.rect.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, y: mm } } }))} />
+                  <LengthField label="Width" testId="ceiling-rect-w" mm={draft.ceiling.rect.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, w: mm } } }))} />
+                  <LengthField label="Depth" testId="ceiling-rect-d" mm={draft.ceiling.rect.d} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, d: mm } } }))} />
+                  <LengthField label="Up / down" testId="ceiling-lift" mm={draft.ceiling.rect.lift} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, lift: mm } } }))} />
+                </div>
+              )}
+              <label className="check depth-check">
+                <input data-testid="ceiling-trap" type="checkbox" checked={draft.ceiling.trap.enabled} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, enabled: event.target.checked } } }))} />
+                Trap door
+              </label>
+              {draft.ceiling.trap.enabled && (
+                <div className="field-row">
+                  <LengthField label="Trap from left of ceiling" testId="trap-x" mm={draft.ceiling.trap.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, x: mm } } }))} />
+                  <LengthField label="Trap from back of ceiling" testId="trap-y" mm={draft.ceiling.trap.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, y: mm } } }))} />
+                  <LengthField label="Trap width" testId="trap-w" mm={draft.ceiling.trap.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, w: mm } } }))} />
+                  <LengthField label="Trap depth" testId="trap-h" mm={draft.ceiling.trap.h} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, h: mm } } }))} />
+                </div>
+              )}
+              <label className="stack">
+                Outside finish image
+                <input
+                  data-testid="ceiling-image-file"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: String(reader.result || "") } }));
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+              {draft.ceiling.image && (
+                <button type="button" data-testid="ceiling-image-clear" onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: "" } }))}>Use named colour</button>
+              )}
+              <p className="hint" data-testid="ceiling-area">
+                {ceilingAreaSqFt(draft.ceiling, draft.width, Math.max(draft.depth, 1)).toFixed(2)} sq ft · {sqmFromSqFt(ceilingAreaSqFt(draft.ceiling, draft.width, Math.max(draft.depth, 1))).toFixed(2)} sq m
+              </p>
+              <RateAmount
+                testId="ceiling"
+                areaLabel="Ceiling"
+                basis={ceilingAreaSqFt(draft.ceiling, draft.width, Math.max(draft.depth, 1))}
+                rate={ceilingPrice(draft.ceiling, draft.width, Math.max(draft.depth, 1)).rate}
+                amount={ceilingPrice(draft.ceiling, draft.width, Math.max(draft.depth, 1)).amount}
+                onRate={(next) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, priceFrom: "rate", ratePerSqFt: money(next) } }))}
+                onAmount={(next) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, priceFrom: "amount", amount: money(next) } }))}
+              />
+              <p className="hint">Whole room, or one rectangle. A return can have its own ceiling.</p>
+            </div>
+          )}
+          <h3 className="subhead">Extra work</h3>
+          <label className="stack">
+            Extra work
+            <select
+              data-testid="extra-work"
+              value={draft.extraWork.kind}
+              onChange={(event) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, kind: event.target.value as ExtraWorkKind } }))}
+            >
+              {(Object.keys(EXTRA_LABEL) as ExtraWorkKind[]).map((kind) => (
+                <option key={kind} value={kind}>
+                  {EXTRA_LABEL[kind]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {draft.extraWork.kind !== "none" && (
+            <>
+              <label className="stack">
+                Extra glass area (sq ft)
+                <NumberField
+                  testId="extra-area"
+                  value={draft.extraWork.areaSqFt}
+                  onChange={(next) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, areaSqFt: next } }))}
+                />
+              </label>
+              <RateAmount
+                testId="extra"
+                amountTestId="extra-amount"
+                areaLabel="Extra"
+                basis={draft.extraWork.areaSqFt}
+                rate={pricePair(draft.extraWork.rate, draft.extraWork.amount, draft.extraWork.areaSqFt, draft.extraWork.priceFrom).rate}
+                amount={pricePair(draft.extraWork.rate, draft.extraWork.amount, draft.extraWork.areaSqFt, draft.extraWork.priceFrom).amount}
+                onRate={(next) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, priceFrom: "rate", rate: money(next) } }))}
+                onAmount={(next) => setDraft((current) => ({ ...current, extraWork: { ...current.extraWork, priceFrom: "amount", amount: money(next) } }))}
+              />
+            </>
+          )}
+          <BillEditor shower={draft} unit={unit} onChange={setDraft} />
+          <p className="draft-total" data-testid="draft-amount">
+            {amount > 0 ? inr(amount) : inr(0)}
+          </p>
+        </section>
+
+        <section>
+          <h2>Saved setup</h2>
+          <p className="hint">Save this setup, then reuse it.</p>
+          <label className="stack">
+            Name
+            <input data-testid="setup-name" value={setupName} placeholder="Standard matt black" onChange={(event) => setSetupName(event.target.value)} />
+          </label>
+          <div className="row-actions">
+            <button type="button" data-testid="save-setup" onClick={saveSetup}>Save setup</button>
+            <button type="button" data-testid="apply-setup" onClick={applySetup} disabled={!setupPick}>Apply saved setup</button>
+          </div>
+          <label className="stack">
+            Library
+            <select data-testid="setup-pick" value={setupPick} onChange={(event) => setSetupPick(event.target.value)}>
+              <option value="">Choose a setup</option>
+              {setups.map((setup) => (
+                <option key={setup.id} value={setup.id}>{setup.name}</option>
+              ))}
+            </select>
+          </label>
+        </section>
+
+        <section>
+          <h2>Optional starter</h2>
+          <p className="hint">Fills this size. Width, height, and depth stay editable.</p>
+          <div className="presets">
+            {[
+              ["single", "Fixed, door, fixed"],
+              ["openable", "Fixed and openable door"],
+              ["wall", "Wall with glass on top"],
+              ["return", "Front run plus a return"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                data-testid={`starter-${id}`}
+                onClick={() => {
+                  setDraft((current) => applyStarter(current, id));
+                  setSelectedId(null);
+                  if (id === "return") setActiveRun("front");
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="commit-block">
+          <label className="stack">
+            Notes
+            <textarea data-testid="shower-notes" rows={3} maxLength={NOTE_LIMIT} value={draft.notes} placeholder="Which sheet, which colour, or any other note" onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value.slice(0, NOTE_LIMIT) }))} />
+            <span className="hint">{draft.notes.length}/{NOTE_LIMIT}</span>
+          </label>
+          {editingSerial != null && (
+            <p className="edit-banner" data-testid="edit-banner">Editing S.No {editingSerial}. Saving keeps this serial number.</p>
+          )}
+          <button type="button" className="primary" data-testid="commit-quote" onClick={commitQuote}>
+            {editingSerial != null ? "Save update" : "Add to quote"}
+          </button>
+          {editingSerial != null && (
+            <button type="button" onClick={cancelEdit}>Cancel edit</button>
+          )}
+          <p className="hint" data-testid="status">{status}</p>
+        </section>
+      </aside>
+
+      <main className="panel stage">
+        <Drawing
+          shower={draft}
+          unit={unit}
+          selectedId={selectedId}
+          activeRun={activeRun}
+          onSelect={(id) => {
+            setSelectedId(id);
+            if (id && draft.sides.some((side) => side.id === id)) setActiveRun(id);
+          }}
+          onMove={(id, x) => setDraft((current) => moveItemX(current, id, x))}
+          onResize={(id, next) => setDraft((current) => patchItem(current, id, next))}
+          onResizeSide={(id, length) => setDraft((current) => updateSide(current, id, { length }))}
+          onMoveSide={(id, attachX) => setDraft((current) => updateSide(current, id, { attachX }))}
+          onMoveFixture={(kind, x, y) => patchFixture(kind, { x, y })}
+          projectRef={projectRef}
+          watermark={company.logo || BRAND_LOGO}
+          dimArmed={dimArmed}
+          onArmDim={() => setDimArmed((on) => !on)}
+          onAddDim={(dim: UserDim) => {
+            setDraft((current) => ({ ...current, dims: [...current.dims, dim] }));
+            setDimArmed(false);
+          }}
+          onMoveDim={(id, offset) => setDraft((current) => ({ ...current, dims: current.dims.map((dim) => (dim.id === id ? { ...dim, offset } : dim)) }))}
+          onNudgeLabel={(key, x, y) => setDraft((current) => ({ ...current, labelNudge: { ...current.labelNudge, [key]: { x, y } } }))}
+          onNudgeHandle={(id, part, x, y) =>
+            setDraft((current) => patchItem(current, id, part === "body" ? { handleDx: x, handleDy: y } : { handleLabelDx: x, handleLabelDy: y }))
+          }
+          onMoveView={(key, x, y) => setDraft((current) => ({ ...current, viewShift: { ...current.viewShift, [key]: { x, y } } }))}
+          onUndo={undoDraft}
+          onRedo={redoDraft}
+          onDuplicate={duplicateSelected}
+          canUndo={historyTick >= 0 && history.current.past.length > 0}
+          canRedo={history.current.future.length > 0}
+        />
       </main>
 
       {quoteOpen && (
@@ -1321,7 +1493,7 @@ export default function App() {
               </div>
               <button type="button" data-testid="close-quote" onClick={() => setQuoteOpen(false)}>Close</button>
             </div>
-            <p className="hint">Editing keeps the same S.No. Delete leaves the other serial numbers as they are. Sizes are in {unit}.</p>
+            <p className="hint">Edit keeps the S.No. Sizes are in {unit}.</p>
             <button type="button" className="primary" data-testid="generate-from-list" onClick={() => { setQuoteOpen(false); setDocOpen(true); }}>
               Generate quote
             </button>
@@ -1354,7 +1526,7 @@ export default function App() {
                       </p>
                       <ul className="glass-lines">
                         {lines.map((line) => (
-                          <li key={line.id} data-testid={line.kind === "wastage" ? "wastage-line" : line.kind === "package" ? "package-line" : line.kind === "handle" ? "handle-line" : line.kind === "legs" ? "legs-line" : line.kind === "rail" ? "rail-line" : "lock-line"}>
+                          <li key={line.id} data-testid={line.kind === "wastage" ? "wastage-line" : line.kind === "package" ? "package-line" : line.kind === "handle" ? "handle-line" : line.kind === "legs" ? "legs-line" : line.kind === "rail" ? "rail-line" : line.kind === "ceiling" ? "ceiling-line" : "lock-line"}>
                             <strong>{line.description}</strong>
                             <span>{line.size}</span>
                             <span>{line.kind === "package" || line.kind === "wastage" ? `${line.area.toFixed(2)} sq ft` : line.kind}</span>
@@ -1418,7 +1590,7 @@ function BillEditor({ shower, onChange }: { shower: Shower; unit: UnitId; onChan
   return (
     <div className="bill-editor">
       <h3 className="subhead">Wastage</h3>
-      <p className="hint">Worked out from standard sheet sizes. Actual area stays as drawn. Wastage is sheet area minus actual area.</p>
+      <p className="hint">Sheet size minus the drawn area is wastage.</p>
       {pieces.length === 0 ? (
         <p className="hint">Add a fixed panel or a door to see the sheet size.</p>
       ) : (
@@ -1441,23 +1613,24 @@ function BillEditor({ shower, onChange }: { shower: Shower; unit: UnitId; onChan
           type="checkbox"
           checked={sameRate}
           onChange={(event) =>
-            onChange(setWastage(shower, "package", { enabled: true, ownRate: !event.target.checked, rate: waste?.rate || shower.material.ratePerSqFt }))
+            onChange(setWastage(shower, "package", { enabled: true, ownRate: !event.target.checked, priceFrom: event.target.checked ? "rate" : waste?.priceFrom, rate: waste?.rate || shower.material.ratePerSqFt }))
           }
         />
         Same rate as glass
       </label>
-      {!sameRate && (
-        <label className="stack">
-          Wastage rate
-          <NumberField
-            testId="wastage-rate"
-            value={waste?.rate ?? 0}
-            onChange={(next) => onChange(setWastage(shower, "package", { enabled: true, ownRate: true, rate: next }))}
-          />
-        </label>
-      )}
+      <p className="hint">{wasteArea.toFixed(2)} sq ft · {sqmFromSqFt(wasteArea).toFixed(2)} sq m</p>
+      <RateAmount
+        testId="wastage"
+        rateTestId="wastage-rate"
+        areaLabel="Wastage"
+        basis={wasteArea}
+        rate={wastagePrice(shower).rate}
+        amount={wastagePrice(shower).amount}
+        onRate={(next) => onChange(setWastage(shower, "package", { enabled: true, ownRate: true, priceFrom: "rate", rate: money(next) }))}
+        onAmount={(next) => onChange(setWastage(shower, "package", { enabled: true, ownRate: true, priceFrom: "amount", amount: money(next) }))}
+      />
       <p className="wastage-note" data-testid="wastage-line">
-        Wastage: {wasteArea.toFixed(2)} sq ft · {sqmFromSqFt(wasteArea).toFixed(2)} sq m · {inr(wastageAmountOf(shower))} at {inr(wastageRateOf(shower))} / sq ft
+        Wastage {inr(wastageAmountOf(shower))} at {inr(wastageRateOf(shower))} / sq ft
       </p>
     </div>
   );
@@ -1489,13 +1662,16 @@ function HandleEditor({
             Handle name
             <input data-testid="handle-name" value={item.handleName} placeholder={item.handleKind === "lpipe" ? "L-type round pipe" : "Rectangular pull"} onChange={(event) => onChange({ handleName: event.target.value })} />
           </label>
-          <label className="stack">
-            Handle rate
-            <span className="unit">
-              ₹
-              <NumberField testId="handle-rate" value={item.handleRate} onChange={(next) => onChange({ handleRate: next })} />
-            </span>
-          </label>
+          <RateAmount
+            testId="handle"
+            rateTestId="handle-rate"
+            areaLabel="Handle"
+            basis={1}
+            rate={money(item.handleRate)}
+            amount={money(item.handleRate)}
+            onRate={(next) => onChange({ handleRate: money(next) })}
+            onAmount={(next) => onChange({ handleRate: money(next) })}
+          />
           <label className="stack">
             Handle photo
             <input
@@ -1515,7 +1691,7 @@ function HandleEditor({
           <LengthField label="Height from floor" testId="handle-height" mm={item.handleHeight} unit={unit} onChange={(mm) => onChange({ handleHeight: mm })} />
           {item.handleKind === "lpipe" && (
             <>
-              <p className="hint">Round pipe L. Defaults follow the dimensioned drawing: vertical Ø30 × 250, horizontal 405, tube Ø25, return 184.</p>
+              <p className="hint">Pipe L. Ø30 × 250, bar 405, tube Ø25, return 184.</p>
               <div className="field-row">
                 <LengthField label="Vertical Ø" testId="pipe-vert-dia" mm={item.pipeVertDia} unit={unit} onChange={(mm) => onChange({ pipeVertDia: mm })} />
                 <LengthField label="Vertical leg" testId="pipe-vert-len" mm={item.pipeVertLen} unit={unit} onChange={(mm) => onChange({ pipeVertLen: mm })} />
@@ -1585,13 +1761,16 @@ function HandleEditor({
             Lock name
             <input data-testid="lock-name" value={item.lockName} placeholder="Lever lock" onChange={(event) => onChange({ lockName: event.target.value })} />
           </label>
-          <label className="stack">
-            Lock rate
-            <span className="unit">
-              ₹
-              <NumberField testId="lock-rate" value={item.lockRate} onChange={(next) => onChange({ lockRate: next })} />
-            </span>
-          </label>
+          <RateAmount
+            testId="lock"
+            rateTestId="lock-rate"
+            areaLabel="Lock"
+            basis={1}
+            rate={money(item.lockRate)}
+            amount={money(item.lockRate)}
+            onRate={(next) => onChange({ lockRate: money(next) })}
+            onAmount={(next) => onChange({ lockRate: money(next) })}
+          />
         </>
       )}
     </div>
@@ -1770,6 +1949,19 @@ function PartitionFields({
       </label>
       {side.ceiling.enabled && (
         <div data-testid="side-ceiling-options">
+          <p className="hint" data-testid="side-ceiling-area">
+            {ceilingAreaSqFt(sideCeilingModel(shower, side), shower.width, Math.max(shower.depth, 1)).toFixed(2)} sq ft · {sqmFromSqFt(ceilingAreaSqFt(sideCeilingModel(shower, side), shower.width, Math.max(shower.depth, 1))).toFixed(2)} sq m
+          </p>
+          <RateAmount
+            testId="side-ceiling"
+            areaLabel="This side"
+            basis={ceilingAreaSqFt(sideCeilingModel(shower, side), shower.width, Math.max(shower.depth, 1))}
+            rate={ceilingPrice(sideCeilingModel(shower, side), shower.width, Math.max(shower.depth, 1)).rate}
+            amount={ceilingPrice(sideCeilingModel(shower, side), shower.width, Math.max(shower.depth, 1)).amount}
+            onRate={(next) => onChange({ ceiling: { ...side.ceiling, priceFrom: "rate", ratePerSqFt: money(next) } })}
+            onAmount={(next) => onChange({ ceiling: { ...side.ceiling, priceFrom: "amount", amount: money(next) } })}
+          />
+          <LengthField label="Level" testId="side-ceiling-level" mm={side.ceiling.level} unit={unit} minMm={-4000} onChange={(mm) => onChange({ ceiling: { ...side.ceiling, level: mm } })} />
           <LengthField label="Module" testId="side-ceiling-module" mm={side.ceiling.customModule ? side.ceiling.customModuleMm : side.ceiling.moduleFt * 304.8} unit={unit} onChange={(mm) => onChange({ ceiling: { ...side.ceiling, customModule: true, customModuleMm: mm } })} />
           <div className="toggle" role="group" aria-label="Side ceiling finish">
             <button type="button" data-testid="side-ceiling-wood" aria-pressed={side.ceiling.finishKind === "wood"} onClick={() => onChange({ ceiling: { ...side.ceiling, finishKind: "wood" satisfies CeilingFinishKind, finishId: "oak" } })}>Wood</button>
@@ -1820,6 +2012,47 @@ function FixturePlace({
   );
 }
 
+function RateAmount({
+  testId,
+  rateTestId,
+  amountTestId,
+  areaLabel,
+  rate,
+  amount,
+  onRate,
+  onAmount,
+}: {
+  testId: string;
+  rateTestId?: string;
+  amountTestId?: string;
+  areaLabel: string;
+  basis: number;
+  rate: number;
+  amount: number;
+  onRate: (value: number) => void;
+  onAmount: (value: number) => void;
+}) {
+  return (
+    <div className="rate-row" data-testid={`${testId}-row`}>
+      <span>{areaLabel}</span>
+      <label className="stack">
+        Rate
+        <span className="unit">
+          ₹
+          <NumberField testId={rateTestId ?? `${testId}-rate`} value={rate} onChange={onRate} />
+        </span>
+      </label>
+      <label className="stack">
+        Amount
+        <span className="unit">
+          ₹
+          <NumberField testId={amountTestId ?? `${testId}-amount`} value={amount} onChange={onAmount} />
+        </span>
+      </label>
+    </div>
+  );
+}
+
 function NumberField({
   testId,
   value,
@@ -1867,12 +2100,14 @@ function LengthField({
   testId,
   mm,
   unit,
+  minMm = 0,
   onChange,
 }: {
   label: string;
   testId: string;
   mm: number;
   unit: UnitId;
+  minMm?: number;
   onChange: (mm: number) => void;
 }) {
   const shown = formatLength(mm, unit);
@@ -1903,7 +2138,7 @@ function LengthField({
           }}
           onBlur={(event) => {
             setFocused(false);
-            onChange(unitToMm(commitNumber(event.currentTarget.value, 0), unit));
+            onChange(unitToMm(commitNumber(event.currentTarget.value, minMm / unitToMm(1, unit)), unit));
           }}
         />
         <em data-testid={`${testId}-unit`}>{unit}</em>

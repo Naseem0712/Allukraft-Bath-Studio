@@ -21,92 +21,147 @@ export function printQuote(): void {
   window.print();
 }
 
-async function sharpSvg(svg: SVGSVGElement): Promise<string | null> {
-  const clone = svg.cloneNode(true) as SVGSVGElement;
-  const box = svg.viewBox?.baseVal;
-  const w = Math.max(900, box && box.width > 0 ? box.width : svg.clientWidth || 720);
-  const h = Math.max(700, box && box.height > 0 ? box.height : svg.clientHeight || 640);
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("width", String(w));
-  clone.setAttribute("height", String(h));
-  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
-  style.textContent = ".dim,.ext{stroke:#111;stroke-width:.55px;fill:none;vector-effect:non-scaling-stroke}.dim text,text.dim,text.panel-size,text.tiny-label{fill:#111;stroke:none;font-family:Arial,sans-serif}line,path,rect,polyline{vector-effect:non-scaling-stroke}";
-  clone.insertBefore(style, clone.firstChild);
-  const xml = new XMLSerializer().serializeToString(clone);
-  const url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
+async function rasterCap(src: string, maxPx: number, alpha = 1): Promise<string | null> {
+  if (!src) return null;
+  const image = new Image();
+  image.crossOrigin = "anonymous";
   try {
-    const image = new Image();
     await new Promise<void>((resolve, reject) => {
       image.onload = () => resolve();
-      image.onerror = () => reject(new Error("svg"));
-      image.src = url;
+      image.onerror = () => reject(new Error("image"));
+      image.src = src;
     });
-    const scale = 4;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(w * scale);
-    canvas.height = Math.round(h * scale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/png");
   } catch {
     return null;
-  } finally {
-    URL.revokeObjectURL(url);
+  }
+  const longest = Math.max(image.width, image.height, 1);
+  const scale = Math.min(1, maxPx / longest);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+}
+
+function ownText(el: Element): string {
+  return [...el.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => (node.textContent || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** Copy paint onto the clone in user units so the PDF lines match the quote page. */
+function paintForPdf(live: SVGSVGElement, clone: SVGSVGElement, displayWidthMm: number) {
+  const box = live.viewBox?.baseVal;
+  const vbW = box && box.width > 0 ? box.width : live.clientWidth || 720;
+  const perPx = (25.4 / 96) * (vbW / Math.max(1, displayWidthMm));
+  const sources = [...live.querySelectorAll("*")];
+  const copies = [...clone.querySelectorAll("*")];
+  sources.forEach((src, index) => {
+    const dst = copies[index];
+    if (!(dst instanceof Element)) return;
+    const style = getComputedStyle(src);
+    const width = parseFloat(style.strokeWidth);
+    if (style.stroke && style.stroke !== "none" && Number.isFinite(width) && width > 0) {
+      dst.setAttribute("stroke", style.stroke);
+      dst.setAttribute("stroke-width", String(Math.max(0.35, width * perPx)));
+      dst.removeAttribute("vector-effect");
+    }
+    if (style.fill && style.fill !== "none") dst.setAttribute("fill", style.fill);
+    if (src.tagName === "text") {
+      const size = parseFloat(style.fontSize);
+      dst.setAttribute("fill", style.fill && style.fill !== "none" ? style.fill : "#111111");
+      dst.setAttribute("stroke", "none");
+      if (Number.isFinite(size)) dst.setAttribute("font-size", String(size * perPx));
+      dst.setAttribute("font-family", "Helvetica, Arial, sans-serif");
+    }
+  });
+}
+
+async function shrinkSvgImages(svg: SVGSVGElement) {
+  const images = [...svg.querySelectorAll("image")];
+  for (const image of images) {
+    const href = image.getAttribute("href") || image.getAttribute("xlink:href") || "";
+    if (!href) continue;
+    const small = await rasterCap(href, 720);
+    if (!small) continue;
+    image.setAttribute("href", small);
+    image.removeAttribute("xlink:href");
   }
 }
 
 export async function exportPdf(pages: HTMLElement[], filename: string): Promise<void> {
-  const [{ jsPDF }, html2canvas] = await Promise.all([import("jspdf"), import("html2canvas")]);
+  const { jsPDF } = await import("jspdf");
+  await import("svg2pdf.js");
   const pdf = new jsPDF({ unit: "mm", format: "a4", compress: true });
+  const drawSvg = (pdf as InstanceType<typeof jsPDF> & { svg: (element: SVGSVGElement, options: { x: number; y: number; width: number; height: number }) => Promise<unknown> }).svg.bind(pdf);
   const host = document.createElement("div");
   host.style.position = "fixed";
-  host.style.left = "-12000px";
+  host.style.left = "-20000px";
   host.style.top = "0";
   document.body.appendChild(host);
   try {
     for (let index = 0; index < pages.length; index += 1) {
-      const page = pages[index];
-      const clone = page.cloneNode(true) as HTMLElement;
-      host.appendChild(clone);
-      const live = [...page.querySelectorAll("svg")];
-      const copies = [...clone.querySelectorAll("svg")];
-      for (let i = 0; i < copies.length; i += 1) {
-        const png = await sharpSvg(live[i]);
-        if (!png) continue;
-        const img = document.createElement("img");
-        img.src = png;
-        img.alt = "";
-        const box = copies[i].getBoundingClientRect();
-        img.style.width = `${box.width || copies[i].clientWidth}px`;
-        img.style.height = `${box.height || copies[i].clientHeight}px`;
-        img.style.objectFit = "contain";
-        copies[i].replaceWith(img);
-      }
-      const canvas = await html2canvas.default(clone, {
-        scale: 3,
-        backgroundColor: "#ffffff",
-        useCORS: true,
-      });
-      const img = canvas.toDataURL("image/png");
-      const pageW = 210;
-      const pageH = 297;
-      const ratio = canvas.height / canvas.width;
-      let drawW = pageW;
-      let drawH = pageW * ratio;
-      let x = 0;
-      let y = 0;
-      if (drawH > pageH) {
-        drawH = pageH;
-        drawW = pageH / ratio;
-        x = (pageW - drawW) / 2;
-      }
       if (index > 0) pdf.addPage();
-      pdf.addImage(img, "PNG", x, y, drawW, drawH);
-      clone.remove();
+      const page = pages[index];
+      const box = page.getBoundingClientRect();
+      const k = 210 / Math.max(1, box.width);
+      const xOf = (left: number) => (left - box.left) * k;
+      const yOf = (top: number) => (top - box.top) * k;
+      const wOf = (width: number) => width * k;
+
+      const mark = page.querySelector<HTMLImageElement>("img.a4-watermark");
+      if (mark?.src) {
+        const faded = await rasterCap(mark.src, 640, 0.07);
+        const rect = mark.getBoundingClientRect();
+        if (faded && rect.width > 1) pdf.addImage(faded, "PNG", xOf(rect.left), yOf(rect.top), wOf(rect.width), wOf(rect.height));
+      }
+
+      for (const svg of page.querySelectorAll("svg")) {
+        const rect = svg.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        const clone = svg.cloneNode(true) as SVGSVGElement;
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        paintForPdf(svg, clone, wOf(rect.width));
+        await shrinkSvgImages(clone);
+        host.appendChild(clone);
+        await drawSvg(clone, { x: xOf(rect.left), y: yOf(rect.top), width: wOf(rect.width), height: wOf(rect.height) });
+        clone.remove();
+      }
+
+      const logo = page.querySelector<HTMLImageElement>("img.a4-logo");
+      if (logo?.src) {
+        const data = await rasterCap(logo.src, 480);
+        const rect = logo.getBoundingClientRect();
+        if (data && rect.width > 1) pdf.addImage(data, "PNG", xOf(rect.left), yOf(rect.top), wOf(rect.width), wOf(rect.height));
+      }
+
+      pdf.setDrawColor(17, 17, 17);
+      pdf.setLineWidth(0.15);
+      for (const row of page.querySelectorAll("tr")) {
+        const rect = row.getBoundingClientRect();
+        if (rect.width < 2) continue;
+        pdf.line(xOf(rect.left), yOf(rect.bottom), xOf(rect.right), yOf(rect.bottom));
+      }
+
+      for (const el of page.querySelectorAll("h1, h2, h3, p, th, td, figcaption, li, span, strong, em, a")) {
+        if (el.closest("svg") || el.closest(".a4-watermark")) continue;
+        const text = ownText(el);
+        if (!text) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) continue;
+        const bold = el.matches("h1, h2, h3, th, strong");
+        const size = el.matches("h1") ? 13 : el.matches("h2, h3") ? 11 : 8;
+        pdf.setFont("helvetica", bold ? "bold" : "normal");
+        pdf.setFontSize(size);
+        pdf.setTextColor(17, 17, 17);
+        const lines = pdf.splitTextToSize(text, Math.max(8, wOf(rect.width)));
+        pdf.text(lines, xOf(rect.left), yOf(rect.top) + size * 0.32);
+      }
     }
   } finally {
     host.remove();

@@ -458,6 +458,7 @@ function ProductPage({
                 mode="elevation"
                 watermark={company.logo || BRAND_LOGO}
                 exportAs={`return-${entry.serial}-${side.id}`}
+                dimScope={side.id}
               />
             </figure>
           ))}
@@ -591,7 +592,7 @@ function ProductPage({
                   <td>{inr(productGlassAmount(shower))}</td>
                 </tr>
                 {lines.filter((line) => line.kind !== "package").map((line) => (
-                  <tr key={line.id} data-testid={line.kind === "extra" ? "extra-amount-line" : line.kind === "wastage" ? "wastage-line" : line.kind === "cut" ? "cut-line" : line.kind === "handle" ? "handle-line" : line.kind === "legs" ? "legs-line" : line.kind === "rail" ? "rail-line" : "lock-line"}>
+                  <tr key={line.id} data-testid={line.kind === "extra" ? "extra-amount-line" : line.kind === "wastage" ? "wastage-line" : line.kind === "cut" ? "cut-line" : line.kind === "handle" ? "handle-line" : line.kind === "legs" ? "legs-line" : line.kind === "rail" ? "rail-line" : line.kind === "ceiling" ? "ceiling-line" : "lock-line"}>
                     <th>{lineLabel(line, include)}{line.photo && include.handlePhoto ? "" : ""}</th>
                     <td>
                       {inr(line.amount)}
