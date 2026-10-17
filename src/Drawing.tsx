@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import ShowerFigure from "./scene";
-import { DOOR_SHORT_MM, type Shower, type UnitId } from "./model";
+import { DOOR_SHORT_MM, type Shower, type UnitId, type UserDim } from "./model";
 
 interface DrawingProps {
   shower: Shower;
@@ -15,9 +15,15 @@ interface DrawingProps {
   onMoveFixture: (kind: "wc" | "shower", x: number, y: number) => void;
   projectRef: MutableRefObject<(clientX: number, clientY: number) => number | null>;
   watermark?: string | null;
+  dimArmed?: boolean;
+  onArmDim?: () => void;
+  onAddDim?: (dim: UserDim) => void;
+  onMoveDim?: (id: string, offset: number) => void;
+  onNudgeLabel?: (key: string, x: number, y: number) => void;
+  onNudgeHandle?: (id: string, part: "body" | "label", x: number, y: number) => void;
 }
 
-export default function Drawing({ shower, unit, selectedId, activeRun, onSelect, onMove, onResize, onResizeSide, onMoveSide, onMoveFixture, projectRef, watermark }: DrawingProps) {
+export default function Drawing({ shower, unit, selectedId, activeRun, onSelect, onMove, onResize, onResizeSide, onMoveSide, onMoveFixture, projectRef, watermark, dimArmed, onArmDim, onAddDim, onMoveDim, onNudgeLabel, onNudgeHandle }: DrawingProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 900, h: 640 });
 
@@ -48,6 +54,9 @@ export default function Drawing({ shower, unit, selectedId, activeRun, onSelect,
           {" · "}
           dimensions in {unit}
         </p>
+        <button type="button" data-testid="dim-tool" aria-pressed={dimArmed} onClick={onArmDim}>
+          {dimArmed ? "Pick two points" : "Dimension"}
+        </button>
       </div>
       <div className="svg-host" ref={hostRef}>
         <ShowerFigure
@@ -66,6 +75,11 @@ export default function Drawing({ shower, unit, selectedId, activeRun, onSelect,
           onMoveFixture={onMoveFixture}
           projectRef={projectRef}
           watermark={watermark}
+          dimArmed={dimArmed}
+          onAddDim={onAddDim}
+          onMoveDim={onMoveDim}
+          onNudgeLabel={onNudgeLabel}
+          onNudgeHandle={onNudgeHandle}
         />
       </div>
     </div>

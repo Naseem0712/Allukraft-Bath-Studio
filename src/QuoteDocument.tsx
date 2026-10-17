@@ -679,7 +679,8 @@ function ClosePage({
 }
 
 function formatDoor(item: PlacedItem, unit: UnitId): string {
-  return `${formatLength(item.width, unit)} × ${formatLength(item.height, unit)} ${unit}`;
+  const fill = item.doorFillName.trim() ? ` · ${item.doorFillName.trim()}` : "";
+  return `${formatLength(item.width, unit)} × ${formatLength(item.height, unit)} ${unit}${fill}`;
 }
 
 function hardwareRows(shower: Shower, unit: UnitId, include: PrintInclude): string {

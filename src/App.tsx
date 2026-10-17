@@ -100,6 +100,7 @@ import {
   type SurfaceWork,
   type TopSpan,
   type UnitId,
+  type UserDim,
   type WallCut,
   type WallFace,
   uid,
@@ -135,6 +136,7 @@ export default function App() {
   const [fileMode, setFileMode] = useState<FileNameMode>(saved?.fileMode ?? "customer");
   const [status, setStatus] = useState("Type the full size. The soft frame follows. Nothing is added to the quote until you confirm.");
   const [ghost, setGhost] = useState<{ label: string; x: number; y: number } | null>(null);
+  const [dimArmed, setDimArmed] = useState(false);
   const projectRef = useRef<(clientX: number, clientY: number) => number | null>(() => null);
   const pending = useRef<{ kind: ItemKind; x: number; y: number; moved: boolean } | null>(null);
   const addRef = useRef<(kind: ItemKind, atX?: number | null) => void>(() => undefined);
@@ -936,7 +938,50 @@ export default function App() {
                 testPrefix="ceiling-channel"
                 onChange={(channels) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, channels } }))}
               />
-              <p className="hint">Panels follow the module size. Finish, lights, and panel joints show on the plan.</p>
+              <div className="toggle" role="group" aria-label="Ceiling area">
+                <button type="button" data-testid="ceiling-room" aria-pressed={draft.ceiling.scope !== "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "room" } }))}>Whole room</button>
+                <button type="button" data-testid="ceiling-rect" aria-pressed={draft.ceiling.scope === "rect"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, scope: "rect" } }))}>One area</button>
+              </div>
+              {draft.ceiling.scope === "rect" && (
+                <div className="field-row" data-testid="ceiling-rect-fields">
+                  <LengthField label="From left" testId="ceiling-rect-x" mm={draft.ceiling.rect.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, x: mm } } }))} />
+                  <LengthField label="From back" testId="ceiling-rect-y" mm={draft.ceiling.rect.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, y: mm } } }))} />
+                  <LengthField label="Width" testId="ceiling-rect-w" mm={draft.ceiling.rect.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, w: mm } } }))} />
+                  <LengthField label="Depth" testId="ceiling-rect-d" mm={draft.ceiling.rect.d} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, d: mm } } }))} />
+                  <LengthField label="Up / down" testId="ceiling-lift" mm={draft.ceiling.rect.lift} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, rect: { ...current.ceiling.rect, lift: mm } } }))} />
+                </div>
+              )}
+              <label className="check depth-check">
+                <input data-testid="ceiling-trap" type="checkbox" checked={draft.ceiling.trap.enabled} onChange={(event) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, enabled: event.target.checked } } }))} />
+                Trap door
+              </label>
+              {draft.ceiling.trap.enabled && (
+                <div className="field-row">
+                  <LengthField label="Trap from left of ceiling" testId="trap-x" mm={draft.ceiling.trap.x} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, x: mm } } }))} />
+                  <LengthField label="Trap from back of ceiling" testId="trap-y" mm={draft.ceiling.trap.y} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, y: mm } } }))} />
+                  <LengthField label="Trap width" testId="trap-w" mm={draft.ceiling.trap.w} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, w: mm } } }))} />
+                  <LengthField label="Trap depth" testId="trap-h" mm={draft.ceiling.trap.h} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, trap: { ...current.ceiling.trap, h: mm } } }))} />
+                </div>
+              )}
+              <label className="stack">
+                Outside finish image
+                <input
+                  data-testid="ceiling-image-file"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: String(reader.result || "") } }));
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+              {draft.ceiling.image && (
+                <button type="button" data-testid="ceiling-image-clear" onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, image: "" } }))}>Use named colour</button>
+              )}
+              <p className="hint">Panels follow the module size. Finish, lights, and panel joints show on the plan. Whole room covers the bathroom. One area covers the rectangle. A return can have its own ceiling.</p>
             </div>
           )}
           <h3 className="subhead">Extra work</h3>
@@ -1067,6 +1112,17 @@ export default function App() {
           onMoveFixture={(kind, x, y) => patchFixture(kind, { x, y })}
           projectRef={projectRef}
           watermark={company.logo || BRAND_LOGO}
+          dimArmed={dimArmed}
+          onArmDim={() => setDimArmed((on) => !on)}
+          onAddDim={(dim: UserDim) => {
+            setDraft((current) => ({ ...current, dims: [...current.dims, dim] }));
+            setDimArmed(false);
+          }}
+          onMoveDim={(id, offset) => setDraft((current) => ({ ...current, dims: current.dims.map((dim) => (dim.id === id ? { ...dim, offset } : dim)) }))}
+          onNudgeLabel={(key, x, y) => setDraft((current) => ({ ...current, labelNudge: { ...current.labelNudge, [key]: { x, y } } }))}
+          onNudgeHandle={(id, part, x, y) =>
+            setDraft((current) => patchItem(current, id, part === "body" ? { handleDx: x, handleDy: y } : { handleLabelDx: x, handleLabelDy: y }))
+          }
         />
         {draft.sides.some((side) => side.id === selectedId) && (
           <aside className="item-float" data-testid="item-editor" aria-label="Partition">
@@ -1173,6 +1229,29 @@ export default function App() {
                       <button type="button" data-testid="swing-outside" aria-pressed={selected.swing === "outside"} onClick={() => patchSelected({ swing: "outside" satisfies DoorSwing })}>Outside</button>
                     </div>
                   </div>
+                  <label className="stack">
+                    Door fill
+                    <input data-testid="door-fill-name" value={selected.doorFillName} placeholder="Glass, laminate, HPL, film" onChange={(event) => patchSelected({ doorFillName: event.target.value })} />
+                  </label>
+                  <label className="stack">
+                    Fill colour
+                    <input data-testid="door-fill-colour" value={selected.doorFillColour} placeholder="#d8d2c8 or a colour name" onChange={(event) => patchSelected({ doorFillColour: event.target.value })} />
+                  </label>
+                  <label className="stack">
+                    Fill image
+                    <input
+                      data-testid="door-fill-file"
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () => patchSelected({ doorFillImage: String(reader.result || "") });
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
                   {selected.doorStyle === "sliding" && (
                     <>
                       <label className="stack">
@@ -1668,6 +1747,35 @@ function PartitionFields({
             </div>
           </div>
         </>
+      )}
+      <label className="check depth-check">
+        <input
+          data-testid="side-ceiling"
+          type="checkbox"
+          checked={side.ceiling.enabled}
+          onChange={(event) => {
+            const bayX = side.attachX <= shower.width / 2 ? 0 : side.attachX;
+            const bayW = side.attachX <= shower.width / 2 ? Math.max(10, side.attachX) : Math.max(10, shower.width - side.attachX);
+            onChange({
+              ceiling: {
+                ...side.ceiling,
+                enabled: event.target.checked,
+                scope: "rect",
+                rect: { ...side.ceiling.rect, x: bayX, y: 0, w: bayW, d: Math.max(10, side.length) },
+              },
+            });
+          }}
+        />
+        Ceiling on this side only
+      </label>
+      {side.ceiling.enabled && (
+        <div data-testid="side-ceiling-options">
+          <LengthField label="Module" testId="side-ceiling-module" mm={side.ceiling.customModule ? side.ceiling.customModuleMm : side.ceiling.moduleFt * 304.8} unit={unit} onChange={(mm) => onChange({ ceiling: { ...side.ceiling, customModule: true, customModuleMm: mm } })} />
+          <div className="toggle" role="group" aria-label="Side ceiling finish">
+            <button type="button" data-testid="side-ceiling-wood" aria-pressed={side.ceiling.finishKind === "wood"} onClick={() => onChange({ ceiling: { ...side.ceiling, finishKind: "wood" satisfies CeilingFinishKind, finishId: "oak" } })}>Wood</button>
+            <button type="button" data-testid="side-ceiling-plain" aria-pressed={side.ceiling.finishKind === "plain"} onClick={() => onChange({ ceiling: { ...side.ceiling, finishKind: "plain" satisfies CeilingFinishKind, finishId: "white" } })}>Plain</button>
+          </div>
+        </div>
       )}
       <button type="button" className="danger" onClick={onRemove}>Remove this partition</button>
     </>

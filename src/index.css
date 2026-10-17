@@ -673,6 +673,7 @@ svg[data-quote="yes"] .dim-strong text { font-size: 24px; font-weight: 700; }
   .no-print, .no-print * { display: none !important; visibility: hidden; }
   .doc-root { position: absolute; inset: auto; left: 0; top: 0; width: auto; background: #fff; padding: 0; overflow: visible; }
   .a4-page { box-shadow: none; margin: 0; page-break-after: always; break-after: page; }
+  .doc-root svg { shape-rendering: geometricPrecision; }
   .a4-watermark, .a4-foot a { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 

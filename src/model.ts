@@ -163,6 +163,14 @@ export interface PlacedItem {
   pullCustom: boolean;
   pullAxis: PullAxis;
   handleHeight: number;
+  /** Millimetres from the default handle position. Positive x moves right, positive y moves down. */
+  handleDx: number;
+  handleDy: number;
+  handleLabelDx: number;
+  handleLabelDy: number;
+  doorFillName: string;
+  doorFillColour: string;
+  doorFillImage: string;
   lockStyle: LockStyle;
   lockName: string;
   lockRate: number;
@@ -214,8 +222,31 @@ export interface WastageSpec {
   rate: number;
 }
 
+export interface CeilingRect {
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  /** Millimetres. Positive draws the ceiling slightly higher on the plan. */
+  lift: number;
+}
+
+export interface CeilingTrap {
+  enabled: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface Ceiling {
   enabled: boolean;
+  /** Room covers the bathroom. Rect covers one offset rectangle. */
+  scope: "room" | "rect";
+  rect: CeilingRect;
+  trap: CeilingTrap;
+  /** Uploaded finish. A named colour is used when this is empty. */
+  image: string;
   channels: ChannelSet;
   materialName: string;
   colour: string;
@@ -228,6 +259,18 @@ export interface Ceiling {
   finishKind: CeilingFinishKind;
   finishId: string;
   lights: CeilingLight[];
+}
+
+export interface UserDim {
+  id: string;
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  /** Signed millimetres along the left normal of A to B. */
+  offset: number;
+  nudgeX: number;
+  nudgeY: number;
 }
 
 export interface TopFixed {
@@ -273,6 +316,7 @@ export interface SideRun {
   doorHandle: Side;
   /** Inside swings into the bathroom. Outside swings away from that side. */
   doorSwing: DoorSwing;
+  ceiling: Ceiling;
   items: PlacedItem[];
 }
 
@@ -319,6 +363,8 @@ export interface Shower {
   items: PlacedItem[];
   sides: SideRun[];
   ceiling: Ceiling;
+  dims: UserDim[];
+  labelNudge: Record<string, { x: number; y: number }>;
   topFixed: TopFixed;
   wc: PlanFixture;
   showerPoint: PlanFixture;
@@ -522,6 +568,13 @@ function normalizeItem(item: Partial<PlacedItem> | PlacedItem): PlacedItem {
     pullCustom: Boolean(item.pullCustom),
     pullAxis: item.pullAxis === "horizontal" ? "horizontal" : "vertical",
     handleHeight: Math.max(0, num(item.handleHeight, 1000)),
+    handleDx: num(item.handleDx, 0),
+    handleDy: num(item.handleDy, 0),
+    handleLabelDx: num(item.handleLabelDx, 0),
+    handleLabelDy: num(item.handleLabelDy, 0),
+    doorFillName: (item.doorFillName ?? "").slice(0, 80),
+    doorFillColour: (item.doorFillColour ?? "").slice(0, 40),
+    doorFillImage: item.doorFillImage ?? "",
     lockStyle: item.lockStyle === "lever" ? "lever" : "none",
     lockName: item.lockName ?? "",
     lockRate: Math.max(0, num(item.lockRate, 0)),
@@ -608,9 +661,21 @@ export function normalizeShower(input?: Partial<Shower> | null): Shower {
       doorX: Math.max(0, num(side.doorX, 0)),
       doorHandle: side.doorHandle === "left" ? "left" : "right",
       doorSwing: side.doorSwing === "outside" ? "outside" : "inside",
+      ceiling: normalizeCeiling(side.ceiling),
       items: (side.items ?? []).map((item) => normalizeItem(item)),
     })),
     ceiling: normalizeCeiling(ceiling),
+    dims: (raw.dims ?? []).slice(0, 40).map((dim) => ({
+      id: dim.id || uid("dim"),
+      ax: num(dim.ax, 0),
+      ay: num(dim.ay, 0),
+      bx: num(dim.bx, 0),
+      by: num(dim.by, 0),
+      offset: num(dim.offset, 80),
+      nudgeX: num(dim.nudgeX, 0),
+      nudgeY: num(dim.nudgeY, 0),
+    })),
+    labelNudge: normalizeNudges(raw.labelNudge),
     wc: clampFixtureIn(normalizeFixture(raw.wc, "wc"), Math.max(10, num(raw.width, 2000)), Math.max(0, num(raw.depth, 900))),
     showerPoint: clampFixtureIn(normalizeFixture(raw.showerPoint, "shower"), Math.max(10, num(raw.width, 2000)), Math.max(0, num(raw.depth, 900))),
     topFixed: applyAutoTop(Math.max(10, num(raw.height, 2100)), {
@@ -722,6 +787,10 @@ function normalizeExtra(raw: Partial<ExtraWorkSpec> | undefined): ExtraWorkSpec 
   };
 }
 
+export function emptyCeiling(): Ceiling {
+  return normalizeCeiling(undefined);
+}
+
 function normalizeCeiling(ceiling: Partial<Ceiling> | undefined): Ceiling {
   const moduleFt = CEILING_MODULES.includes(ceiling?.moduleFt as (typeof CEILING_MODULES)[number]) ? Number(ceiling?.moduleFt) : 2;
   const finishKind = ceiling?.finishKind === "plain" ? "plain" : "wood";
@@ -729,6 +798,22 @@ function normalizeCeiling(ceiling: Partial<Ceiling> | undefined): Ceiling {
   const finishId = finishes.some((row) => row.id === ceiling?.finishId) ? (ceiling?.finishId as string) : finishes[0].id;
   return {
     enabled: Boolean(ceiling?.enabled),
+    scope: ceiling?.scope === "rect" ? "rect" : "room",
+    rect: {
+      x: num(ceiling?.rect?.x, 0),
+      y: num(ceiling?.rect?.y, 0),
+      w: Math.max(10, num(ceiling?.rect?.w, 800)),
+      d: Math.max(10, num(ceiling?.rect?.d, 800)),
+      lift: num(ceiling?.rect?.lift, 0),
+    },
+    trap: {
+      enabled: Boolean(ceiling?.trap?.enabled),
+      x: Math.max(0, num(ceiling?.trap?.x, 80)),
+      y: Math.max(0, num(ceiling?.trap?.y, 80)),
+      w: Math.max(40, num(ceiling?.trap?.w, 450)),
+      h: Math.max(40, num(ceiling?.trap?.h, 450)),
+    },
+    image: ceiling?.image ?? "",
     channels: { ...emptyChannels(), ...ceiling?.channels },
     materialName: ceiling?.materialName ?? "",
     colour: ceiling?.colour ?? "",
@@ -747,6 +832,16 @@ function normalizeCeiling(ceiling: Partial<Ceiling> | undefined): Ceiling {
       size: Math.max(40, num(light.size, 150)),
     })),
   };
+}
+
+function normalizeNudges(raw: unknown): Record<string, { x: number; y: number }> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, { x: number; y: number }> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, { x?: number; y?: number }>)) {
+    if (!value || typeof value !== "object") continue;
+    out[key] = { x: num(value.x, 0), y: num(value.y, 0) };
+  }
+  return out;
 }
 
 function normalizeWastage(raw: unknown): Record<string, WastageSpec> {
@@ -1759,35 +1854,50 @@ export interface CeilingPanelGeom {
   h: number;
 }
 
-export function ceilingPanelGeoms(shower: Shower): CeilingPanelGeom[] {
-  const current = normalizeShower(shower);
-  if (!current.ceiling.enabled) return [];
-  const mod = ceilingModuleMm(current.ceiling);
-  const spanW = Math.max(current.width, 1);
-  const spanD = Math.max(current.depth, 1);
+export function ceilingSpan(ceiling: Ceiling, width: number, depth: number): { x: number; y: number; w: number; d: number } {
+  if (ceiling.scope === "rect") {
+    return {
+      x: ceiling.rect.x,
+      y: ceiling.rect.y,
+      w: Math.max(10, ceiling.rect.w || width),
+      d: Math.max(10, ceiling.rect.d || depth),
+    };
+  }
+  return { x: 0, y: 0, w: Math.max(width, 1), d: Math.max(depth, 1) };
+}
+
+export function ceilingPanels(ceiling: Ceiling, width: number, depth: number): CeilingPanelGeom[] {
+  const mod = ceilingModuleMm(ceiling);
+  const span = ceilingSpan(ceiling, width, depth);
   const panels: CeilingPanelGeom[] = [];
-  if (current.ceiling.along === "depth") {
-    let x = 0;
+  if (ceiling.along === "depth") {
+    let x = span.x;
     let index = 0;
-    while (x < spanW - 0.5 && index < 48) {
-      const w = Math.min(mod, spanW - x);
+    while (x < span.x + span.w - 0.5 && index < 48) {
+      const w = Math.min(mod, span.x + span.w - x);
       if (w < 1) break;
-      panels.push({ index, x, y: 0, w, h: spanD });
+      panels.push({ index, x, y: span.y, w, h: span.d });
       x += w;
       index += 1;
     }
   } else {
-    let y = 0;
+    let y = span.y;
     let index = 0;
-    while (y < spanD - 0.5 && index < 48) {
-      const h = Math.min(mod, spanD - y);
+    while (y < span.y + span.d - 0.5 && index < 48) {
+      const h = Math.min(mod, span.y + span.d - y);
       if (h < 1) break;
-      panels.push({ index, x: 0, y, w: spanW, h });
+      panels.push({ index, x: span.x, y, w: span.w, h });
       y += h;
       index += 1;
     }
   }
   return panels;
+}
+
+export function ceilingPanelGeoms(shower: Shower): CeilingPanelGeom[] {
+  const current = normalizeShower(shower);
+  if (!current.ceiling.enabled) return [];
+  return ceilingPanels(current.ceiling, current.width, Math.max(current.depth, 1));
 }
 
 export function handleSizeText(item: PlacedItem, unit: UnitId): string {
@@ -1915,6 +2025,13 @@ function baseItem(kind: ItemKind, x: number, width: number, height: number, dept
     pullCustom: false,
     pullAxis: "vertical",
     handleHeight: 1000,
+    handleDx: 0,
+    handleDy: 0,
+    handleLabelDx: 0,
+    handleLabelDy: 0,
+    doorFillName: "",
+    doorFillColour: "",
+    doorFillImage: "",
     lockStyle: "none",
     lockName: "",
     lockRate: 0,
@@ -1975,6 +2092,7 @@ export function addSide(shower: Shower, attachX?: number): Shower {
     doorX: 0,
     doorHandle: "right",
     doorSwing: "inside",
+    ceiling: emptyCeiling(),
     items: [],
   };
   return {
@@ -2072,6 +2190,7 @@ export function updateSide(shower: Shower, id: string, patch: Partial<SideRun>):
         doorX: clamp(num(patch.doorX ?? side.doorX, side.doorX), 0, Math.max(0, length - Math.min(doorWidth, length))),
         doorHandle: (patch.doorHandle ?? side.doorHandle) === "left" ? "left" : "right",
         doorSwing: (patch.doorSwing ?? side.doorSwing) === "outside" ? "outside" : "inside",
+        ceiling: normalizeCeiling(patch.ceiling ?? side.ceiling),
         items: (patch.items ?? side.items).map((item) => {
           const next = normalizeItem(item);
           const max = Math.max(0, length - Math.min(next.width, length));
@@ -2189,6 +2308,7 @@ export function applyStarter(shower: Shower, id: string): Shower {
         doorX: fixedW,
         doorHandle: "left",
         doorSwing: "inside",
+        ceiling: emptyCeiling(),
         items: [fixed, door],
       },
     ],

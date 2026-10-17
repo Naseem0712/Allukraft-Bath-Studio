@@ -21,32 +21,95 @@ export function printQuote(): void {
   window.print();
 }
 
+async function sharpSvg(svg: SVGSVGElement): Promise<string | null> {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  const box = svg.viewBox?.baseVal;
+  const w = Math.max(900, box && box.width > 0 ? box.width : svg.clientWidth || 720);
+  const h = Math.max(700, box && box.height > 0 ? box.height : svg.clientHeight || 640);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(w));
+  clone.setAttribute("height", String(h));
+  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  style.textContent = ".dim,.ext{stroke:#111;stroke-width:.55px;fill:none;vector-effect:non-scaling-stroke}.dim text,text.dim,text.panel-size,text.tiny-label{fill:#111;stroke:none;font-family:Arial,sans-serif}line,path,rect,polyline{vector-effect:non-scaling-stroke}";
+  clone.insertBefore(style, clone.firstChild);
+  const xml = new XMLSerializer().serializeToString(clone);
+  const url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("svg"));
+      image.src = url;
+    });
+    const scale = 4;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export async function exportPdf(pages: HTMLElement[], filename: string): Promise<void> {
   const [{ jsPDF }, html2canvas] = await Promise.all([import("jspdf"), import("html2canvas")]);
   const pdf = new jsPDF({ unit: "mm", format: "a4", compress: true });
-  for (let index = 0; index < pages.length; index += 1) {
-    const canvas = await html2canvas.default(pages[index], {
-      scale: 2,
-      backgroundColor: "#ffffff",
-      useCORS: true,
-    });
-    const img = canvas.toDataURL("image/jpeg", 0.92);
-    const pageW = 210;
-    const pageH = 297;
-    const ratio = canvas.height / canvas.width;
-    let drawW = pageW;
-    let drawH = pageW * ratio;
-    let x = 0;
-    let y = 0;
-    if (drawH > pageH) {
-      drawH = pageH;
-      drawW = pageH / ratio;
-      x = (pageW - drawW) / 2;
-    } else {
-      y = 0;
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-12000px";
+  host.style.top = "0";
+  document.body.appendChild(host);
+  try {
+    for (let index = 0; index < pages.length; index += 1) {
+      const page = pages[index];
+      const clone = page.cloneNode(true) as HTMLElement;
+      host.appendChild(clone);
+      const live = [...page.querySelectorAll("svg")];
+      const copies = [...clone.querySelectorAll("svg")];
+      for (let i = 0; i < copies.length; i += 1) {
+        const png = await sharpSvg(live[i]);
+        if (!png) continue;
+        const img = document.createElement("img");
+        img.src = png;
+        img.alt = "";
+        const box = copies[i].getBoundingClientRect();
+        img.style.width = `${box.width || copies[i].clientWidth}px`;
+        img.style.height = `${box.height || copies[i].clientHeight}px`;
+        img.style.objectFit = "contain";
+        copies[i].replaceWith(img);
+      }
+      const canvas = await html2canvas.default(clone, {
+        scale: 3,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+      });
+      const img = canvas.toDataURL("image/png");
+      const pageW = 210;
+      const pageH = 297;
+      const ratio = canvas.height / canvas.width;
+      let drawW = pageW;
+      let drawH = pageW * ratio;
+      let x = 0;
+      let y = 0;
+      if (drawH > pageH) {
+        drawH = pageH;
+        drawW = pageH / ratio;
+        x = (pageW - drawW) / 2;
+      }
+      if (index > 0) pdf.addPage();
+      pdf.addImage(img, "PNG", x, y, drawW, drawH);
+      clone.remove();
     }
-    if (index > 0) pdf.addPage();
-    pdf.addImage(img, "JPEG", x, y, drawW, drawH);
+  } finally {
+    host.remove();
   }
   pdf.save(filename.endsWith(".pdf") ? filename : `${filename}.pdf`);
 }
@@ -87,8 +150,8 @@ async function svgToPng(svg: SVGSVGElement): Promise<string | null> {
     const canvas = document.createElement("canvas");
     const width = Math.max(600, svg.clientWidth || 680);
     const height = Math.max(220, svg.clientHeight || 360);
-    canvas.width = width * 2;
-    canvas.height = height * 2;
+    canvas.width = width * 4;
+    canvas.height = height * 4;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.fillStyle = "#ffffff";

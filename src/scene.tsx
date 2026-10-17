@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   COLOUR_HEX,
   PULL_FINISHES,
@@ -7,6 +7,9 @@ import {
   ceilingModuleMm,
   clamp,
   ceilingPanelGeoms,
+  ceilingPanels,
+  ceilingSpan,
+  uid,
   contentExtents,
   coverageGaps,
   designedSqFt,
@@ -28,6 +31,7 @@ import {
   type MmPoint,
   type MmRect,
   type PlacedItem,
+  type UserDim,
   type PlanFacing,
   type Shower,
   type Side,
@@ -41,12 +45,25 @@ import {
 
 export type FigureMode = "studio" | "elevations" | "elevation" | "plan";
 
+type EditApi = {
+  startHandle: (event: ReactPointerEvent, item: PlacedItem, part: "body" | "label") => void;
+  startLabel: (event: ReactPointerEvent, key: string) => void;
+  nudge: Record<string, { x: number; y: number }>;
+  editable: boolean;
+  scale: number;
+};
+const EditCtx = createContext<EditApi | null>(null);
+
 type DragState =
   | { kind: "move"; id: string; originX: number; itemX: number; screenPerMm: number }
   | { kind: "width"; id: string; edge: "left" | "right"; originX: number; itemX: number; itemW: number; limit: number; screenPerMm: number }
   | { kind: "side"; id: string; axis: "x" | "y"; origin: number; length: number; screenPerMm: number }
   | { kind: "side-x"; id: string; originX: number; attachX: number; screenPerMm: number }
-  | { kind: "fixture"; fixture: "wc" | "shower"; originX: number; originY: number; x: number; y: number; screenPerMm: number };
+  | { kind: "fixture"; fixture: "wc" | "shower"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
+  | { kind: "handle"; id: string; part: "body" | "label"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
+  | { kind: "user-dim"; id: string; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
+  | { kind: "label"; key: string; originX: number; originY: number; x: number; y: number; screenPerMm: number }
+  | { kind: "dim-new"; ax: number; ay: number; bx: number; by: number; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number };
 
 interface FigureProps {
   shower: Shower;
@@ -67,6 +84,11 @@ interface FigureProps {
   exportAs?: string;
   highlightIds?: string[];
   highlightCeiling?: boolean;
+  dimArmed?: boolean;
+  onAddDim?: (dim: UserDim) => void;
+  onMoveDim?: (id: string, offset: number) => void;
+  onNudgeLabel?: (key: string, x: number, y: number) => void;
+  onNudgeHandle?: (id: string, part: "body" | "label", x: number, y: number) => void;
 }
 
 export default function ShowerFigure({
@@ -88,17 +110,29 @@ export default function ShowerFigure({
   exportAs,
   highlightIds = [],
   highlightCeiling = false,
+  dimArmed = false,
+  onAddDim,
+  onMoveDim,
+  onNudgeLabel,
+  onNudgeHandle,
 }: FigureProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const figId = useId().replace(/:/g, "");
   const drag = useRef<DragState | null>(null);
   const [live, setLive] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [pendingDim, setPendingDim] = useState<UserDim | null>(null);
+  const dimA = useRef<{ x: number; y: number } | null>(null);
+  const dimOffset = useRef(0);
   const onMoveRef = useRef(onMove);
   const onResizeRef = useRef(onResize);
   const onResizeSideRef = useRef(onResizeSide);
   const onMoveSideRef = useRef(onMoveSide);
   const onMoveFixtureRef = useRef(onMoveFixture);
   const onSelectRef = useRef(onSelect);
+  const onAddDimRef = useRef(onAddDim);
+  const onMoveDimRef = useRef(onMoveDim);
+  const onNudgeLabelRef = useRef(onNudgeLabel);
+  const onNudgeHandleRef = useRef(onNudgeHandle);
   const unitRef = useRef(unit);
   onMoveRef.current = onMove;
   onResizeRef.current = onResize;
@@ -106,6 +140,10 @@ export default function ShowerFigure({
   onMoveSideRef.current = onMoveSide;
   onMoveFixtureRef.current = onMoveFixture;
   onSelectRef.current = onSelect;
+  onAddDimRef.current = onAddDim;
+  onMoveDimRef.current = onMoveDim;
+  onNudgeLabelRef.current = onNudgeLabel;
+  onNudgeHandleRef.current = onNudgeHandle;
   unitRef.current = unit;
 
   const planOn = mode === "plan" || (mode === "studio" && showPlan(shower));
@@ -204,12 +242,47 @@ export default function ShowerFigure({
         setLive({ x: spot.x + 10, y: spot.y - 8, text: `${formatLength(x, unitRef.current)} · ${formatLength(y, unitRef.current)}` });
         return;
       }
+      if (active.kind === "handle") {
+        const x = Math.round(active.x + (event.clientX - active.originX) / active.screenPerMm);
+        const y = Math.round(active.y + (event.clientY - active.originY) / active.screenPerMm);
+        onNudgeHandleRef.current?.(active.id, active.part, x, y);
+        return;
+      }
+      if (active.kind === "label") {
+        const x = Math.round(active.x + (event.clientX - active.originX) / active.screenPerMm);
+        const y = Math.round(active.y + (event.clientY - active.originY) / active.screenPerMm);
+        onNudgeLabelRef.current?.(active.key, x, y);
+        return;
+      }
+      if (active.kind === "user-dim" || active.kind === "dim-new") {
+        const dx = (event.clientX - active.originX) / active.screenPerMm;
+        const dy = (event.clientY - active.originY) / active.screenPerMm;
+        const offset = Math.round(active.offset + dx * active.nx + dy * active.ny);
+        dimOffset.current = offset;
+        if (active.kind === "user-dim") onMoveDimRef.current?.(active.id, offset);
+        else setPendingDim({ id: "pending", ax: active.ax, ay: active.ay, bx: active.bx, by: active.by, offset, nudgeX: 0, nudgeY: 0 });
+        return;
+      }
       const delta = (active.axis === "x" ? event.clientX - active.origin : event.clientY - active.origin) / active.screenPerMm;
       const next = Math.max(10, Math.round(active.length + (active.axis === "y" ? -delta : delta)));
       onResizeSideRef.current?.(active.id, next);
       setLive({ x: spot.x + 10, y: spot.y - 8, text: `${formatLength(next, unitRef.current)} ${unitRef.current}` });
     };
     const up = () => {
+      const active = drag.current;
+      if (active?.kind === "dim-new") {
+        onAddDimRef.current?.({
+          id: uid("dim"),
+          ax: active.ax,
+          ay: active.ay,
+          bx: active.bx,
+          by: active.by,
+          offset: dimOffset.current,
+          nudgeX: 0,
+          nudgeY: 0,
+        });
+        setPendingDim(null);
+      }
       drag.current = null;
       setLive(null);
     };
@@ -289,6 +362,68 @@ export default function ShowerFigure({
     onSelectRef.current?.(fixture === "wc" ? WC_ID : SHOWER_ID);
   }
 
+  function startHandle(event: ReactPointerEvent, item: PlacedItem, part: "body" | "label") {
+    if (!onNudgeHandle) return;
+    event.stopPropagation();
+    event.preventDefault();
+    drag.current = {
+      kind: "handle",
+      id: item.id,
+      part,
+      originX: event.clientX,
+      originY: event.clientY,
+      x: part === "body" ? item.handleDx : item.handleLabelDx,
+      y: part === "body" ? item.handleDy : item.handleLabelDy,
+      screenPerMm: pixelsPerMm(),
+    };
+  }
+
+  function startLabel(event: ReactPointerEvent, key: string) {
+    if (!onNudgeLabel) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const prev = shower.labelNudge[key] ?? { x: 0, y: 0 };
+    drag.current = { kind: "label", key, originX: event.clientX, originY: event.clientY, x: prev.x, y: prev.y, screenPerMm: pixelsPerMm() };
+  }
+
+  function pickDim(event: ReactPointerEvent, ox: number, top: number) {
+    if (!dimArmed) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const svg = svgRef.current;
+    const rect = svg?.getBoundingClientRect();
+    if (!svg || !rect || rect.width < 2) return;
+    const sx = ((event.clientX - rect.left) / rect.width) * width;
+    const sy = ((event.clientY - rect.top) / rect.height) * height;
+    const mmx = (sx - ox) / scale;
+    const mmy = (sy - top) / scale;
+    if (!dimA.current) {
+      dimA.current = { x: mmx, y: mmy };
+      setLive({ x: sx + 8, y: sy, text: "Point A" });
+      return;
+    }
+    const a = dimA.current;
+    dimA.current = null;
+    const adx = mmx - a.x;
+    const ady = mmy - a.y;
+    const len = Math.hypot(adx, ady) || 1;
+    const nx = -ady / len;
+    const ny = adx / len;
+    dimOffset.current = 80;
+    drag.current = { kind: "dim-new", ax: a.x, ay: a.y, bx: mmx, by: mmy, originX: event.clientX, originY: event.clientY, offset: 80, nx, ny, screenPerMm: pixelsPerMm() };
+    setPendingDim({ id: "pending", ax: a.x, ay: a.y, bx: mmx, by: mmy, offset: 80, nudgeX: 0, nudgeY: 0 });
+  }
+
+  function startUserDim(event: ReactPointerEvent, dim: UserDim) {
+    if (!onMoveDim) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const adx = dim.bx - dim.ax;
+    const ady = dim.by - dim.ay;
+    const len = Math.hypot(adx, ady) || 1;
+    drag.current = { kind: "user-dim", id: dim.id, originX: event.clientX, originY: event.clientY, offset: dim.offset, nx: -ady / len, ny: adx / len, screenPerMm: pixelsPerMm() };
+  }
+
   function startSide(event: ReactPointerEvent, side: SideRun, axis: "x" | "y") {
     if (!onResizeSide) return;
     event.stopPropagation();
@@ -322,6 +457,7 @@ export default function ShowerFigure({
       role="img"
       aria-label="Shower drawing"
     >
+      <EditCtx.Provider value={{ startHandle, startLabel, nudge: shower.labelNudge ?? {}, editable: !quote && Boolean(onNudgeLabel), scale }}>
       <Defs figId={figId} metal={metal} />
       <rect width={width} height={height} fill="#ffffff" onPointerDown={() => onSelect?.(null)} />
       {watermark && (
@@ -404,6 +540,29 @@ export default function ShowerFigure({
               captions={false}
               showBalance={!quote}
             />
+            {side == null &&
+              [...shower.dims, ...(pendingDim ? [pendingDim] : [])].map((dim) => (
+                <UserDimMark
+                  key={dim.id}
+                  dim={dim}
+                  X={X}
+                  Y={Y}
+                  scale={scale}
+                  unit={unit}
+                  onDrag={dim.id === "pending" || quote ? undefined : (event) => startUserDim(event, dim)}
+                />
+              ))}
+            {side == null && dimArmed && !quote && (
+              <rect
+                data-testid="dim-catch"
+                x={view.ox}
+                y={view.top}
+                width={shower.width * scale}
+                height={shower.height * scale}
+                fill="transparent"
+                onPointerDown={(event) => pickDim(event, view.ox, view.top)}
+              />
+            )}
           </g>
         );
       })}
@@ -415,7 +574,51 @@ export default function ShowerFigure({
           </text>
         </g>
       )}
+      </EditCtx.Provider>
     </svg>
+  );
+}
+
+function UserDimMark({
+  dim,
+  X,
+  Y,
+  scale,
+  unit,
+  onDrag,
+}: {
+  dim: UserDim;
+  X: (mm: number) => number;
+  Y: (mm: number) => number;
+  scale: number;
+  unit: UnitId;
+  onDrag?: (event: ReactPointerEvent) => void;
+}) {
+  const dx = dim.bx - dim.ax;
+  const dy = dim.by - dim.ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const ox = nx * dim.offset;
+  const oy = ny * dim.offset;
+  const ax = X(dim.ax + ox + dim.nudgeX);
+  const ay = Y(dim.ay + oy + dim.nudgeY);
+  const bx = X(dim.bx + ox + dim.nudgeX);
+  const by = Y(dim.by + oy + dim.nudgeY);
+  const tick = 5;
+  const tx = (dx / len) * tick;
+  const ty = (dy / len) * tick;
+  return (
+    <g data-testid="user-dim" data-mm={Math.round(len)} onPointerDown={onDrag} style={{ cursor: onDrag ? "move" : undefined }}>
+      <line className="ext" x1={X(dim.ax)} y1={Y(dim.ay)} x2={ax} y2={ay} />
+      <line className="ext" x1={X(dim.bx)} y1={Y(dim.by)} x2={bx} y2={by} />
+      <line className="dim" x1={ax} y1={ay} x2={bx} y2={by} />
+      <line className="dim" x1={ax - tx - ty} y1={ay - ty + tx} x2={ax + tx + ty} y2={ay + ty - tx} />
+      <line className="dim" x1={bx - tx - ty} y1={by - ty + tx} x2={bx + tx + ty} y2={by + ty - tx} />
+      <text className="dim" x={(ax + bx) / 2} y={(ay + by) / 2 - 6} textAnchor="middle" fontSize={Math.max(11, 13 * scale)}>
+        {formatLength(len, unit)}
+      </text>
+    </g>
   );
 }
 
@@ -1238,6 +1441,7 @@ function DoorView({
       data-handle-kind={item.handleKind}
       data-y={Math.round(geom.y)}
       data-h={Math.round(geom.h)}
+      data-fill={item.doorFillName || item.doorFillColour || item.doorFillImage ? "custom" : "glass"}
       onPointerDown={layer === "fill" && onDrag ? (event) => onDrag(event, item) : undefined}
     >
       {layer === "line" && item.doorStyle === "openable" && item.outerFrame && framed && (
@@ -1255,6 +1459,7 @@ function DoorView({
         h={h}
         framed={framed && shower.product !== "cubicle"}
         hpl={shower.product === "cubicle"}
+        doorFill={item.doorFillColour || item.doorFillImage ? { colour: item.doorFillColour, image: item.doorFillImage } : undefined}
         face={face}
         faceMm={faceMm}
         infill={shower.material.infill}
@@ -1395,7 +1600,10 @@ function PlanView({
           pointerEvents="none"
         />
       ))}
-      {shower.ceiling.enabled && <CeilingPlan shower={shower} X={X} PY={PY} scale={scale} depth={depth} unit={unit} />}
+      {shower.ceiling.enabled && <CeilingPlan shower={shower} X={X} PY={PY} scale={scale} unit={unit} />}
+      {shower.sides.map((side) =>
+        side.ceiling.enabled ? <SideCeiling key={side.id} shower={shower} side={side} X={X} PY={PY} scale={scale} depth={depth} unit={unit} /> : null,
+      )}
       {framed && <MiterFrame x={X(0)} y={PY(back)} w={shower.width * scale} h={room * scale} t={Math.min(face, (room * scale) / 2 - 0.2, (shower.width * scale) / 2 - 0.2)} faceMm={faceMm} gaps={[]} />}
       {!framed && <rect data-testid="plan-frame" x={X(0)} y={PY(back)} width={shower.width * scale} height={room * scale} fill="none" stroke="#243038" strokeWidth="0.6" />}
       {shower.items
@@ -1868,32 +2076,105 @@ function CeilingPlan({
   X,
   PY,
   scale,
-  depth,
   unit,
 }: {
   shower: Shower;
   X: (mm: number) => number;
   PY: (mm: number) => number;
   scale: number;
-  depth: number;
   unit: UnitId;
 }) {
   const panels = ceilingPanelGeoms(shower);
   const finish = ceilingFinish(shower.ceiling);
-  const roomD = Math.min(depth, Math.max(shower.depth, 1));
+  const lift = shower.ceiling.rect.lift * scale;
+  const span = ceilingSpan(shower.ceiling, shower.width, Math.max(shower.depth, 1));
+  const pat = "ceil-main";
   return (
-    <g data-testid="ceiling-grid" data-panels={panels.length} data-finish={finish.id}>
+    <g data-testid="ceiling-grid" data-panels={panels.length} data-finish={finish.id} transform={`translate(0 ${-lift})`}>
+      {shower.ceiling.image && (
+        <defs>
+          <pattern id={pat} patternUnits="userSpaceOnUse" width={Math.max(1, span.w * scale)} height={Math.max(1, span.d * scale)}>
+            <image data-testid="ceiling-image" href={shower.ceiling.image} width={Math.max(1, span.w * scale)} height={Math.max(1, span.d * scale)} preserveAspectRatio="xMidYMid slice" />
+          </pattern>
+        </defs>
+      )}
       {panels.map((panel) => (
         <g key={panel.index} data-testid="ceiling-panel" data-index={panel.index}>
-          <rect x={X(panel.x)} y={PY(panel.y)} width={Math.max(1, panel.w * scale)} height={Math.max(1, Math.min(panel.h, roomD) * scale)} fill={finish.hex} stroke="#111111" strokeWidth="1.15" />
-          <text x={X(panel.x + panel.w / 2)} y={PY(panel.y + Math.min(panel.h, roomD) / 2)} textAnchor="middle" className="tiny-label" fill="#111111">
+          <rect x={X(panel.x)} y={PY(panel.y)} width={Math.max(1, panel.w * scale)} height={Math.max(1, panel.h * scale)} fill={shower.ceiling.image ? `url(#${pat})` : finish.hex} stroke="#111111" strokeWidth="1.15" />
+          <text x={X(panel.x + panel.w / 2)} y={PY(panel.y + panel.h / 2)} textAnchor="middle" className="tiny-label" fill="#111111">
             {formatLength(panel.w, unit)} × {formatLength(panel.h, unit)}
           </text>
         </g>
       ))}
+      {shower.ceiling.trap.enabled && (
+        <rect
+          data-testid="ceiling-trap"
+          x={X(span.x + shower.ceiling.trap.x)}
+          y={PY(span.y + shower.ceiling.trap.y)}
+          width={Math.max(4, shower.ceiling.trap.w * scale)}
+          height={Math.max(4, shower.ceiling.trap.h * scale)}
+          fill="none"
+          stroke="#111111"
+          strokeWidth="1.1"
+          strokeDasharray="4 2"
+        />
+      )}
       {shower.ceiling.lights.map((light) => (
-        <LightMark key={light.id} cx={X(light.x)} cy={PY(Math.min(light.y, roomD))} r={Math.max(7, (light.size * scale) / 2)} />
+        <LightMark key={light.id} cx={X(light.x)} cy={PY(light.y)} r={Math.max(7, (light.size * scale) / 2)} />
       ))}
+    </g>
+  );
+}
+
+function SideCeiling({
+  shower,
+  side,
+  X,
+  PY,
+  scale,
+  depth,
+  unit,
+}: {
+  shower: Shower;
+  side: SideRun;
+  X: (mm: number) => number;
+  PY: (mm: number) => number;
+  scale: number;
+  depth: number;
+  unit: UnitId;
+}) {
+  const frame = Math.max(1, shower.material.profileDepth || 45);
+  const bayW = side.attachX <= shower.width / 2 ? Math.max(10, side.attachX) : Math.max(10, shower.width - side.attachX);
+  const bayX = side.attachX <= shower.width / 2 ? 0 : side.attachX;
+  const bayD = Math.max(10, side.length);
+  const bayY = side.face === "wall" ? 0 : Math.max(0, Math.max(shower.depth, depth) - frame - bayD);
+  const ceiling =
+    side.ceiling.scope === "rect"
+      ? side.ceiling
+      : { ...side.ceiling, scope: "rect" as const, rect: { x: bayX, y: bayY, w: bayW, d: bayD, lift: side.ceiling.rect.lift } };
+  const panels = ceilingPanels(ceiling, shower.width, Math.max(shower.depth, depth, 1));
+  const finish = ceilingFinish(ceiling);
+  const span = ceilingSpan(ceiling, shower.width, Math.max(shower.depth, 1));
+  const lift = ceiling.rect.lift * scale;
+  const pat = `side-ceil-${side.id}`;
+  return (
+    <g data-testid="side-ceiling" data-side={side.id} transform={`translate(0 ${-lift})`}>
+      {ceiling.image && (
+        <defs>
+          <pattern id={pat} patternUnits="userSpaceOnUse" width={Math.max(1, span.w * scale)} height={Math.max(1, span.d * scale)}>
+            <image data-testid="ceiling-image" href={ceiling.image} width={Math.max(1, span.w * scale)} height={Math.max(1, span.d * scale)} preserveAspectRatio="xMidYMid slice" />
+          </pattern>
+        </defs>
+      )}
+      {panels.map((panel) => (
+        <rect key={panel.index} x={X(panel.x)} y={PY(panel.y)} width={Math.max(1, panel.w * scale)} height={Math.max(1, panel.h * scale)} fill={ceiling.image ? `url(#${pat})` : finish.hex} stroke="#111111" strokeWidth="1" />
+      ))}
+      {ceiling.trap.enabled && (
+        <rect data-testid="ceiling-trap" x={X(span.x + ceiling.trap.x)} y={PY(span.y + ceiling.trap.y)} width={Math.max(4, ceiling.trap.w * scale)} height={Math.max(4, ceiling.trap.h * scale)} fill="none" stroke="#111111" strokeDasharray="4 2" />
+      )}
+      <text x={X(span.x + span.w / 2)} y={PY(span.y + span.d / 2)} textAnchor="middle" className="tiny-label">
+        {side.name} {formatLength(span.w, unit)}
+      </text>
     </g>
   );
 }
@@ -2085,6 +2366,7 @@ function PanelFace({
   h,
   framed,
   hpl = false,
+  doorFill,
   faceMm,
   infill,
   figId,
@@ -2102,6 +2384,7 @@ function PanelFace({
   h: number;
   framed: boolean;
   hpl?: boolean;
+  doorFill?: { colour: string; image: string };
   face: number;
   faceMm: number;
   infill: Shower["material"]["infill"];
@@ -2116,18 +2399,25 @@ function PanelFace({
   if (!loops.length) return null;
   const screen = (loop: MmPoint[]) => loop.map((point) => ({ x: X(point.x), y: Y(point.y) }));
   if (layer === "fill") {
-    const fill = hpl ? "#efe6d6" : infill === "sheet" ? `url(#${figId}-sheet)` : `url(#${figId}-glass)`;
+    const custom = Boolean(doorFill && (doorFill.colour || doorFill.image));
+    const patId = `${figId}-doorfill-${Math.round(panel.x)}-${Math.round(panel.y)}`;
+    const fill = custom ? (doorFill?.image ? `url(#${patId})` : doorFill?.colour || "#d8d2c8") : hpl ? "#efe6d6" : infill === "sheet" ? `url(#${figId}-sheet)` : `url(#${figId}-glass)`;
     const d = loops.map((loop) => ringPath(screen(loop))).join(" ");
     const clipId = `${figId}-glass-${Math.round(panel.x)}-${Math.round(panel.y)}-${Math.round(panel.w)}-${Math.round(panel.h)}`;
     return (
-      <g data-testid="glass-panel" data-infill={infill} data-corners={loops[0].length} data-loops={loops.length}>
+      <g data-testid="glass-panel" data-infill={custom ? "custom" : infill} data-corners={loops[0].length} data-loops={loops.length}>
         <defs>
           <clipPath id={clipId}>
             <path d={d} fillRule="evenodd" />
           </clipPath>
+          {custom && doorFill?.image && (
+            <pattern id={patId} patternUnits="userSpaceOnUse" width={w} height={h}>
+              <image href={doorFill.image} width={w} height={h} preserveAspectRatio="xMidYMid slice" />
+            </pattern>
+          )}
         </defs>
-        <path data-testid="glass-outline" d={d} fill={fill} fillOpacity={hpl ? 1 : 0.92} fillRule="evenodd" stroke="none" />
-        {!hpl && w > 28 && h > 28 && (
+        <path data-testid="glass-outline" d={d} fill={fill} fillOpacity={hpl || custom ? 1 : 0.92} fillRule="evenodd" stroke="none" />
+        {!hpl && !custom && w > 28 && h > 28 && (
           <g clipPath={`url(#${clipId})`} stroke="#111111" strokeWidth="0.55" opacity="0.35" pointerEvents="none">
             <line x1={X(panel.x) + 6} y1={Y(panel.y + panel.h) - 6} x2={X(panel.x + panel.w) - 6} y2={Y(panel.y) + 6} />
           </g>
@@ -2603,8 +2893,24 @@ function ShowerMark({
 }
 
 function SizeMark({ x, y, label, testId, dy = 0 }: { x: number; y: number; label: string; testId: string; dy?: number }) {
+  const edit = useContext(EditCtx);
+  const nudge = edit?.nudge[testId];
+  const s = edit?.scale || 1;
+  const nx = (nudge?.x ?? 0) * s;
+  const ny = (nudge?.y ?? 0) * s;
+  const canDrag = Boolean(edit?.editable);
   return (
-    <text data-testid={testId} data-dy={Math.round(dy)} x={x} y={y + dy} textAnchor="middle" className="panel-size" pointerEvents="none">
+    <text
+      data-testid={testId}
+      data-dy={Math.round(dy)}
+      x={x + nx}
+      y={y + dy + ny}
+      textAnchor="middle"
+      className="panel-size"
+      pointerEvents={canDrag ? "all" : "none"}
+      style={{ cursor: canDrag ? "move" : undefined }}
+      onPointerDown={canDrag ? (event) => edit?.startLabel(event, testId) : undefined}
+    >
       {label}
     </text>
   );
@@ -2631,32 +2937,43 @@ function DoorHardware({
   unit: UnitId;
   hardware: string;
 }) {
-  const inset = Math.min(34, Math.max(16, openingW * 0.12));
+  const edit = useContext(EditCtx);
+  const inset = 12;
   const hx = item.handleSide === "left" ? openingX + inset : openingX + openingW - inset;
   const mount = Y(shower.height - item.handleHeight);
   const floor = Y(shower.height);
+  const bodyX = hx + item.handleDx * scale;
+  const bodyY = mount + item.handleDy * scale;
+  const sideSign = item.handleSide === "left" ? -1 : 1;
+  const bar = Math.max(6, 32 * scale);
+  const labelX = bodyX + sideSign * (bar / 2 + 28) + item.handleLabelDx * scale;
+  const labelY = bodyY + item.handleLabelDy * scale;
   const finish = PULL_FINISHES.find((row) => row.name === item.pullFinish) ?? PULL_FINISHES[6];
   const lengthMm = item.handleKind === "lpipe" ? Math.max(item.pipeVertLen, item.pipeHorizLen) : item.pullLength;
   const marked = item.handleKind !== "none" || item.lockStyle !== "none";
+  const canDrag = Boolean(edit?.editable);
+  const verticalLabel = !(item.handleKind === "pull" && item.pullAxis === "horizontal");
   return (
-    <g data-testid="handle" data-side={item.handleSide} data-kind={item.handleKind} pointerEvents="none">
+    <g data-testid="handle" data-side={item.handleSide} data-kind={item.handleKind} data-dx={item.handleDx} data-dy={item.handleDy} data-label-dx={item.handleLabelDx} data-label-dy={item.handleLabelDy}>
       {marked && (
         <>
-          <line x1={hx} y1={floor} x2={hx} y2={mount} stroke="#111111" strokeWidth="0.6" strokeDasharray="2 2" />
-          <text data-testid="handle-height" x={hx + (item.handleSide === "left" ? -36 : 36)} y={floor - 14} textAnchor={item.handleSide === "left" ? "end" : "start"} className="panel-size">
+          <line x1={bodyX} y1={floor} x2={bodyX} y2={bodyY} stroke="#111111" strokeWidth="0.6" strokeDasharray="2 2" pointerEvents="none" />
+          <text data-testid="handle-height" x={bodyX + sideSign * 36} y={floor - 14} textAnchor={item.handleSide === "left" ? "end" : "start"} className="panel-size" pointerEvents="none">
             {formatLength(item.handleHeight, unit)} {unit} from floor
           </text>
         </>
       )}
-      {item.handleKind === "lpipe" && <RoundPipeL x={hx} y={mount} scale={scale} item={item} />}
-      {item.handleKind === "pull" && <PullBar x={hx} y={mount} scale={scale} item={item} finish={finish.hex} />}
-      {item.lockStyle === "lever" && (
-        <LeverLock x={hx + (item.handleSide === "left" ? 16 : -16)} y={mount} colour={hardware} side={item.handleSide} />
-      )}
+      <g data-testid="handle-body" onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "body") : undefined} style={{ cursor: canDrag ? "move" : undefined }}>
+        {item.handleKind === "lpipe" && <RoundPipeL x={bodyX} y={bodyY} scale={scale} item={item} />}
+        {item.handleKind === "pull" && <PullBar x={bodyX} y={bodyY} scale={scale} item={item} finish={finish.hex} />}
+        {item.lockStyle === "lever" && (
+          <LeverLock x={bodyX + sideSign * 16} y={bodyY} colour={hardware} side={item.handleSide} />
+        )}
+      </g>
       {item.handlePhoto && (
         <image
           href={item.handlePhoto}
-          x={item.handleSide === "left" ? openingX + 6 : openingX + openingW - 54}
+          x={item.handleSide === "left" ? bodyX + 8 : bodyX - 56}
           y={openingY + 8}
           width="48"
           height="48"
@@ -2668,11 +2985,13 @@ function DoorHardware({
         <text
           data-testid="handle-direction"
           data-axis={item.handleKind === "pull" ? item.pullAxis : "lpipe"}
-          x={item.handleKind === "pull" && item.pullAxis === "horizontal" ? hx : hx + (item.handleSide === "left" ? -18 : 18)}
-          y={item.handleKind === "pull" && item.pullAxis === "horizontal" ? mount - Math.max(18, item.pullLength * scale) / 2 - 10 : mount}
+          x={verticalLabel ? 0 : labelX}
+          y={verticalLabel ? 0 : labelY - bar / 2 - 12}
           textAnchor="middle"
           className="panel-size"
-          transform={item.handleKind === "pull" && item.pullAxis !== "horizontal" ? `rotate(-90 ${hx + (item.handleSide === "left" ? -18 : 18)} ${mount})` : undefined}
+          transform={verticalLabel ? `translate(${labelX} ${labelY}) rotate(-90)` : undefined}
+          onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "label") : undefined}
+          style={{ cursor: canDrag ? "move" : undefined }}
         >
           {item.handleKind === "pull"
             ? `${item.pullAxis === "horizontal" ? "Horizontal" : "Vertical"} ${formatLength(lengthMm, unit)} · ${item.handleSide === "left" ? "Left" : "Right"}`
@@ -2774,11 +3093,17 @@ function Hinges({ side, x, y, w, h, count, scale }: { side: Side; x: number; y: 
 }
 
 function DimH({ x1, x2, y, label, testId, strong, fromY }: { x1: number; x2: number; y: number; label: string; testId?: string; strong?: boolean; fromY?: number }) {
+  const edit = useContext(EditCtx);
   const span = Math.abs(x2 - x1);
   if (span < 8) return null;
   const mid = (x1 + x2) / 2;
   const textW = label.length * 6.2 + 6;
   const gap = Math.min(textW / 2, Math.max(0, span / 2 - 4));
+  const nudge = testId ? edit?.nudge[testId] : undefined;
+  const s = edit?.scale || 1;
+  const nx = (nudge?.x ?? 0) * s;
+  const ny = (nudge?.y ?? 0) * s;
+  const canDrag = Boolean(edit?.editable && testId);
   return (
     <g className={strong ? "dim dim-strong" : "dim"} pointerEvents="none">
       {fromY != null && (
@@ -2791,7 +3116,15 @@ function DimH({ x1, x2, y, label, testId, strong, fromY }: { x1: number; x2: num
       <line x1={x2} y1={y - 3.5} x2={x2} y2={y + 3.5} />
       <line x1={x1} y1={y} x2={mid - gap} y2={y} />
       <line x1={mid + gap} y1={y} x2={x2} y2={y} />
-      <text data-testid={testId} x={mid} y={y + 3} textAnchor="middle">
+      <text
+        data-testid={testId}
+        x={mid + nx}
+        y={y + 3 + ny}
+        textAnchor="middle"
+        pointerEvents={canDrag ? "all" : "none"}
+        style={{ cursor: canDrag ? "move" : undefined }}
+        onPointerDown={canDrag && testId ? (event) => edit?.startLabel(event, testId) : undefined}
+      >
         {label}
       </text>
     </g>
@@ -2799,8 +3132,16 @@ function DimH({ x1, x2, y, label, testId, strong, fromY }: { x1: number; x2: num
 }
 
 function DimV({ x, y1, y2, label, testId, fromX }: { x: number; y1: number; y2: number; label: string; testId?: string; fromX?: number }) {
+  const edit = useContext(EditCtx);
   if (Math.abs(y2 - y1) < 10) return null;
   const mid = (y1 + y2) / 2;
+  const nudge = testId ? edit?.nudge[testId] : undefined;
+  const s = edit?.scale || 1;
+  const nx = (nudge?.x ?? 0) * s;
+  const ny = (nudge?.y ?? 0) * s;
+  const tx = x - 8 + nx;
+  const ty = mid + ny;
+  const canDrag = Boolean(edit?.editable && testId);
   return (
     <g className="dim" pointerEvents="none">
       {fromX != null && (
@@ -2812,7 +3153,16 @@ function DimV({ x, y1, y2, label, testId, fromX }: { x: number; y1: number; y2: 
       <line x1={x - 3.5} y1={y1} x2={x + 3.5} y2={y1} />
       <line x1={x - 3.5} y1={y2} x2={x + 3.5} y2={y2} />
       <line x1={x} y1={y1} x2={x} y2={y2} />
-      <text data-testid={testId} x={x - 8} y={mid} textAnchor="middle" transform={`rotate(-90 ${x - 8} ${mid})`}>
+      <text
+        data-testid={testId}
+        x={tx}
+        y={ty}
+        textAnchor="middle"
+        transform={`rotate(-90 ${tx} ${ty})`}
+        pointerEvents={canDrag ? "all" : "none"}
+        style={{ cursor: canDrag ? "move" : undefined }}
+        onPointerDown={canDrag && testId ? (event) => edit?.startLabel(event, testId) : undefined}
+      >
         {label}
       </text>
     </g>
