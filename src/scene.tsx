@@ -12,7 +12,6 @@ import {
   ceilingSpan,
   sideCeilingModel,
   uid,
-  contentExtents,
   coverageGaps,
   designedSqFt,
   displayDepth,
@@ -65,7 +64,7 @@ type DragState =
   | { kind: "handle"; id: string; part: "body" | "label"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
   | { kind: "user-dim"; id: string; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
   | { kind: "label"; key: string; axis: "x" | "y" | "both"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
-  | { kind: "dim-new"; ax: number; ay: number; bx: number; by: number; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
+  | { kind: "dim-new"; view: string; ax: number; ay: number; bx: number; by: number; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
   | { kind: "view"; key: string; originX: number; originY: number; x: number; y: number; perPx: number };
 
 interface FigureProps {
@@ -129,11 +128,13 @@ export default function ShowerFigure({
   dimScope,
 }: FigureProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const contentRef = useRef<SVGGElement>(null);
+  const [quoteBox, setQuoteBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const figId = useId().replace(/:/g, "");
   const drag = useRef<DragState | null>(null);
   const [live, setLive] = useState<{ x: number; y: number; text: string } | null>(null);
   const [pendingDim, setPendingDim] = useState<UserDim | null>(null);
-  const dimA = useRef<{ x: number; y: number } | null>(null);
+  const dimA = useRef<{ x: number; y: number; view: string } | null>(null);
   const dimOffset = useRef(0);
   const onMoveRef = useRef(onMove);
   const onResizeRef = useRef(onResize);
@@ -189,17 +190,66 @@ export default function ShowerFigure({
   const single = mode === "elevation" || mode === "plan";
   const layoutW = fitWidth ?? width;
   const layoutH = fitHeight ?? height;
-  const dimTop = single ? 110 : quote ? 96 : 124;
-  const dimBot = single ? 78 : quote ? 64 : 96;
+  let dimTop = single ? (quote ? 96 : 110) : quote ? 168 : 124;
+  let dimBot = single ? (quote ? 48 : 78) : quote ? 96 : 96;
   const gapMm = quote ? 120 : 168;
-  const padL = single ? 148 : quote ? 120 : 136;
-  const padR = single ? 36 : quote ? 54 : 86;
+  const padL = single ? (quote ? 220 : 148) : quote ? 168 : 136;
+  const padR = single ? (quote ? 130 : 36) : quote ? 96 : 86;
   const availW = Math.max(40, layoutW - padL - padR);
   const availH = Math.max(40, layoutH - 10);
+  const only = views[0];
+  if (quote && single && only) {
+    const topMm = only.kind === "plan" ? 240 : 176;
+    const botMm = only.kind === "plan" ? 96 : 28;
+    for (let pass = 0; pass < 4; pass += 1) {
+      const room = Math.max(40, availH - dimTop - dimBot);
+      const fit = Math.min(availW / Math.max(1, only.widthMm), room / Math.max(1, only.heightMm));
+      dimTop = Math.ceil(topMm * fit + 56);
+      dimBot = Math.ceil(botMm * fit + 28);
+    }
+  }
   const arranged = arrangeViews(views, availW, availH, dimTop, dimBot, gapMm);
   const scale = arranged.scale;
   const oxShift = padL + Math.max(0, (availW - arranged.blockW) / 2);
-  const oyShift = 6 + Math.max(0, (availH - arranged.blockH) / 2);
+  const tightQuote = quote && single;
+  const oyShift = tightQuote ? 4 : 6 + Math.max(0, (availH - arranged.blockH) / 2);
+  const svgH = tightQuote ? Math.ceil(arranged.blockH + oyShift + 8) : height;
+  const frameBox = `0 0 ${width} ${svgH}`;
+
+  useLayoutEffect(() => {
+    if (!tightQuote) return;
+    const node = contentRef.current;
+    const svg = svgRef.current;
+    if (!node || !svg) return;
+    let box: SVGRect;
+    try {
+      box = node.getBBox();
+    } catch {
+      return;
+    }
+    if (box.width < 2 || box.height < 2) return;
+    const slot = svg.getBoundingClientRect();
+    const slotMm = slot.width > 2 ? (slot.width * 25.4) / 96 : 90;
+    const pad = (3 * box.width) / Math.max(24, slotMm - 6);
+    const next = {
+      x: box.x - pad,
+      y: box.y - pad,
+      w: Math.max(1, box.width + pad * 2),
+      h: Math.max(1, box.height + pad * 2),
+    };
+    setQuoteBox((prev) => {
+      if (
+        prev &&
+        Math.abs(prev.x - next.x) < 0.6 &&
+        Math.abs(prev.y - next.y) < 0.6 &&
+        Math.abs(prev.w - next.w) < 0.6 &&
+        Math.abs(prev.h - next.h) < 0.6
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [tightQuote, shower, width, svgH, scale, unit]);
   const placedViews = arranged.items.map((view) => {
     const shift = quote ? { x: 0, y: 0 } : (shower.viewShift?.[view.key] ?? { x: 0, y: 0 });
     return {
@@ -288,7 +338,7 @@ export default function ShowerFigure({
         const offset = Math.round(active.offset + dx * active.nx + dy * active.ny);
         dimOffset.current = offset;
         if (active.kind === "user-dim") onMoveDimRef.current?.(active.id, offset);
-        else setPendingDim({ id: "pending", ax: active.ax, ay: active.ay, bx: active.bx, by: active.by, offset, nudgeX: 0, nudgeY: 0 });
+        else setPendingDim({ id: "pending", view: active.view, ax: active.ax, ay: active.ay, bx: active.bx, by: active.by, offset, nudgeX: 0, nudgeY: 0 });
         return;
       }
       const delta = (active.axis === "x" ? event.clientX - active.origin : event.clientY - active.origin) / active.screenPerMm;
@@ -301,6 +351,7 @@ export default function ShowerFigure({
       if (active?.kind === "dim-new") {
         onAddDimRef.current?.({
           id: uid("dim"),
+          view: active.view,
           ax: active.ax,
           ay: active.ay,
           bx: active.bx,
@@ -433,7 +484,7 @@ export default function ShowerFigure({
     };
   }
 
-  function pickDim(event: ReactPointerEvent, ox: number, top: number) {
+  function pickDim(event: ReactPointerEvent, ox: number, top: number, viewKey: string) {
     if (!dimArmed) return;
     event.stopPropagation();
     event.preventDefault();
@@ -444,8 +495,8 @@ export default function ShowerFigure({
     const sy = ((event.clientY - rect.top) / rect.height) * height;
     const mmx = (sx - ox) / scale;
     const mmy = (sy - top) / scale;
-    if (!dimA.current) {
-      dimA.current = { x: mmx, y: mmy };
+    if (!dimA.current || dimA.current.view !== viewKey) {
+      dimA.current = { x: mmx, y: mmy, view: viewKey };
       setLive({ x: sx + 8, y: sy, text: "Point A" });
       return;
     }
@@ -457,8 +508,8 @@ export default function ShowerFigure({
     const nx = -ady / len;
     const ny = adx / len;
     dimOffset.current = 80;
-    drag.current = { kind: "dim-new", ax: a.x, ay: a.y, bx: mmx, by: mmy, originX: event.clientX, originY: event.clientY, offset: 80, nx, ny, screenPerMm: pixelsPerMm() };
-    setPendingDim({ id: "pending", ax: a.x, ay: a.y, bx: mmx, by: mmy, offset: 80, nudgeX: 0, nudgeY: 0 });
+    drag.current = { kind: "dim-new", view: viewKey, ax: a.x, ay: a.y, bx: mmx, by: mmy, originX: event.clientX, originY: event.clientY, offset: 80, nx, ny, screenPerMm: pixelsPerMm() };
+    setPendingDim({ id: "pending", view: viewKey, ax: a.x, ay: a.y, bx: mmx, by: mmy, offset: 80, nudgeX: 0, nudgeY: 0 });
   }
 
   function startUserDim(event: ReactPointerEvent, dim: UserDim) {
@@ -490,8 +541,9 @@ export default function ShowerFigure({
       ref={svgRef}
       className="canvas"
       width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
+      height={svgH}
+      viewBox={tightQuote && quoteBox ? `${quoteBox.x} ${quoteBox.y} ${quoteBox.w} ${quoteBox.h}` : frameBox}
+      style={tightQuote ? { aspectRatio: `${width} / ${svgH}` } : undefined}
       preserveAspectRatio="xMidYMid meet"
       data-testid="canvas"
       data-mode={mode}
@@ -507,12 +559,12 @@ export default function ShowerFigure({
       <style>{drawingCss(quote)}</style>
       <EditCtx.Provider value={{ startHandle, startLabel, nudge: shower.labelNudge ?? {}, editable: !quote && Boolean(onNudgeLabel), scale }}>
       <Defs figId={figId} metal={metal} />
-      <rect data-canvas="paper" width={width} height={height} fill={quote ? "none" : "#ffffff"} onPointerDown={() => onSelect?.(null)} />
+      <rect data-canvas="paper" width={width} height={svgH} fill={quote ? "none" : "#ffffff"} onPointerDown={() => onSelect?.(null)} />
       {watermark && (
         <image
           href={watermark}
           x={width / 2 - 110}
-          y={height / 2 - 110}
+          y={svgH / 2 - 110}
           width={220}
           height={220}
           opacity={0.16}
@@ -521,15 +573,33 @@ export default function ShowerFigure({
           pointerEvents="none"
         />
       )}
+      <g ref={contentRef} data-testid="quote-fit">
       {placedViews.map((view) => {
+        const side = view.kind === "elev" ? shower.sides.find((item) => item.id === view.key) : undefined;
+        const dimKey = view.kind === "plan" ? "plan" : side?.id ?? dimScope ?? "front";
+        const viewDims = [...shower.dims, ...(pendingDim && pendingDim.view === dimKey ? [pendingDim] : [])].filter((dim) => dim.view === dimKey);
         const X = (mm: number) => view.ox + (mm + (view.kind === "plan" ? swingPad.left : 0)) * scale;
         const Y = (mm: number) => view.top + mm * scale;
+        const dimCatch = dimArmed && !quote ? (
+          <rect
+            data-testid="dim-catch"
+            data-view={dimKey}
+            x={view.ox}
+            y={view.top}
+            width={view.widthMm * scale}
+            height={view.heightMm * scale}
+            fill="transparent"
+            onPointerDown={(event) => pickDim(event, view.kind === "plan" ? view.ox + swingPad.left * scale : view.ox, view.top, dimKey)}
+          />
+        ) : null;
         if (view.kind === "plan") {
           return (
             <g key={view.key} data-testid="plan">
-              <text x={view.ox} y={Math.max(16, view.top - 108)} className="view-label" data-testid="view-move" style={{ cursor: onMoveView && !quote ? "move" : undefined }} onPointerDown={onMoveView && !quote ? (event) => startView(event, view.key) : undefined}>
-                Plan
-              </text>
+              {!quote && (
+                <text x={view.ox} y={Math.max(16, view.top - 108)} className="view-label" data-testid="view-move" style={{ cursor: onMoveView ? "move" : undefined }} onPointerDown={onMoveView ? (event) => startView(event, view.key) : undefined}>
+                  Plan
+                </text>
+              )}
               <PlanView
                 shower={shower}
                 X={X}
@@ -552,19 +622,32 @@ export default function ShowerFigure({
                 highlightCeiling={highlightCeiling}
               />
               {shower.useDepth && (
-                <DimV x={X(shower.width) + 22 * scale} y1={Y(Math.max(0, depth - Math.max(shower.depth, 1)))} y2={Y(depth)} label={`Bathroom ${formatLength(shower.depth, unit)} ${unit}`} testId="room-depth" fromX={X(shower.width)} />
+                <DimV x={X(shower.width) + 22 * scale} y1={Y(Math.max(0, depth - Math.max(shower.depth, 1)))} y2={Y(depth)} label={`Depth ${formatLength(shower.depth, unit)} ${unit}`} testId="room-depth" fromX={X(shower.width)} />
               )}
+              {viewDims.map((dim) => (
+                <UserDimMark
+                  key={dim.id}
+                  dim={dim}
+                  X={X}
+                  Y={Y}
+                  scale={scale}
+                  unit={unit}
+                  onDrag={dim.id === "pending" || quote ? undefined : (event) => startUserDim(event, dim)}
+                />
+              ))}
+              {dimCatch}
             </g>
           );
         }
-        const side = shower.sides.find((item) => item.id === view.key);
         const model = side ? elevationShower(shower, side) : shower;
         const active = side ? activeRun === side.id : activeRun === "front";
         return (
           <g key={view.key} data-testid={side ? "side-elevation" : "elevation"} data-active={active ? "yes" : "no"}>
-            <text x={view.ox} y={Math.max(16, view.top - 108)} className="view-label" data-testid="view-move" style={{ cursor: onMoveView && !quote ? "move" : undefined }} onPointerDown={onMoveView && !quote ? (event) => startView(event, view.key) : undefined}>
-              {view.title}
-            </text>
+            {!quote && (
+              <text x={view.ox} y={Math.max(16, view.top - 108)} className="view-label" data-testid="view-move" style={{ cursor: onMoveView ? "move" : undefined }} onPointerDown={onMoveView ? (event) => startView(event, view.key) : undefined}>
+                {view.title}
+              </text>
+            )}
             <Elevation
               shower={model}
               source={shower}
@@ -589,8 +672,7 @@ export default function ShowerFigure({
               captions={false}
               showBalance={!quote}
             />
-            {side == null &&
-              [...shower.dims, ...(pendingDim ? [pendingDim] : [])].map((dim) => (
+            {viewDims.map((dim) => (
                 <UserDimMark
                   key={dim.id}
                   dim={dim}
@@ -601,20 +683,11 @@ export default function ShowerFigure({
                   onDrag={dim.id === "pending" || quote ? undefined : (event) => startUserDim(event, dim)}
                 />
               ))}
-            {side == null && dimArmed && !quote && (
-              <rect
-                data-testid="dim-catch"
-                x={view.ox}
-                y={view.top}
-                width={shower.width * scale}
-                height={shower.height * scale}
-                fill="transparent"
-                onPointerDown={(event) => pickDim(event, view.ox, view.top)}
-              />
-            )}
+            {dimCatch}
           </g>
         );
       })}
+      </g>
       {live && (
         <g data-testid="live-size" pointerEvents="none">
           <rect x={live.x} y={live.y - 14} width={Math.max(54, live.text.length * 6.4 + 12)} height={18} rx="3" fill="#111111" />
@@ -781,7 +854,6 @@ function Elevation({
   const u = (mm: number) => mm * scale;
   const face = faceMm * scale;
   const topBox = showTop ? topFixedBox(shower) : null;
-  const extents = contentExtents(shower);
   const dims = segmentDims(shower, unit);
   const labelDy = captions ? captionShifts(shower, X, Y, scale, unit) : new Map<string, number>();
   return (
@@ -798,10 +870,6 @@ function Elevation({
         stroke="none"
         onPointerDown={() => onSelect?.(null)}
       />
-      <line x1={X(extents.minX) - 8} y1={Y(shower.height)} x2={X(extents.maxX) + 14} y2={Y(shower.height)} stroke="#111111" strokeWidth="1.1" />
-      <text x={X(extents.maxX) + 18} y={Y(shower.height) + 4} className="floor-label">
-        Floor
-      </text>
       {topBox && (
         <TopFixedView
           layer="fill"
@@ -936,7 +1004,7 @@ function Elevation({
             figId={figId}
             unit={unit}
             selected={item.id === selectedId}
-            gaps={hingeGaps(shower, X, Y, scale)}
+            gaps={[...hingeGaps(shower, X, Y, scale), ...overlapHideGaps(shower, item, X, Y, scale, faceMm)]}
             captions={captions}
             labelDy={labelDy.get(item.id) ?? 0}
             onDrag={undefined}
@@ -944,17 +1012,6 @@ function Elevation({
           />
         ))}
       <HingeLayer shower={shower} X={X} Y={Y} scale={scale} />
-      {showTop && source.showerPoint.enabled && (
-        <ShowerMark
-          where="elev"
-          x={X(source.showerPoint.x)}
-          y={Y(source.height - Math.min(source.height - 40, Math.max(80, source.showerPoint.height)))}
-          scale={scale}
-          facing={source.showerPoint.facing}
-          selected={selectedId === SHOWER_ID}
-          onSelect={onSelect ? () => onSelect(SHOWER_ID) : undefined}
-        />
-      )}
       {framed && shower.items.length === 0 && !topBox && shower.product !== "cubicle" && (
         <g pointerEvents="none">
           <MiterFrame x={X(0)} y={Y(0)} w={shower.width * scale} h={shower.height * scale} t={face} faceMm={faceMm} gaps={[]} />
@@ -1072,6 +1129,50 @@ function sharedMullionSkip(shower: Shower, item: PlacedItem, faceMm: number): nu
 
 function sharedMullionOwner(shower: Shower, item: PlacedItem): boolean {
   return fixedNeighbor(shower, item, "right");
+}
+
+/** The stile behind a sliding overlap, in screen pixels, for the height of the joint. */
+function overlapHideGaps(
+  shower: Shower,
+  item: PlacedItem,
+  X: (mm: number) => number,
+  Y: (mm: number) => number,
+  scale: number,
+  faceMm: number,
+): ScreenGap[] {
+  const gaps: ScreenGap[] = [];
+  for (const door of shower.items) {
+    if (door.kind !== "door" || door.doorStyle !== "sliding") continue;
+    const side: "left" | "right" = door.handleSide === "right" ? "left" : "right";
+    const edge = side === "left" ? door.x : door.x + door.width;
+    const neighbor = shower.items.find((other) => {
+      if (other.id === door.id || (other.kind !== "fixed" && other.kind !== "door")) return false;
+      const otherEdge = side === "left" ? other.x + other.width : other.x;
+      return Math.abs(otherEdge - edge) <= 45;
+    });
+    if (!neighbor) continue;
+    const geom = geometryOf(shower, door);
+    const span = geom.overlap > 0.5 ? geom.overlap : faceMm;
+    const zoneLeft = side === "left" ? edge - span : edge;
+    const doorInFront = door.slideSeat !== "inside";
+    const neighborInFront =
+      neighbor.kind === "door" &&
+      neighbor.slideSeat !== "inside" &&
+      doorInFront &&
+      shower.items.indexOf(door) < shower.items.indexOf(neighbor);
+    if (neighborInFront) continue;
+    const rear = doorInFront ? neighbor : door;
+    if (rear.id !== item.id) continue;
+    const y0 = geom.leafY;
+    const h = Math.max(geom.leafH, geom.h);
+    gaps.push({
+      x: X(zoneLeft) - 1.5,
+      y: Y(y0) - 1,
+      w: span * scale + 3,
+      h: h * scale + 2,
+    });
+  }
+  return gaps;
 }
 
 function ordered(items: PlacedItem[]): PlacedItem[] {
@@ -1529,32 +1630,8 @@ function DoorView({
           )}
           <g data-testid="sliding-track">
             <line x1={openingX + 2} y1={openingY + coverH + 2} x2={openingX + openingW - 2} y2={openingY + coverH + 2} stroke={hardware} strokeWidth="1.4" />
-            <line
-              x1={openingX + 2}
-              y1={openingY + coverH + Math.max(4, item.trackSize * scale * 0.45)}
-              x2={openingX + openingW - 2}
-              y2={openingY + coverH + Math.max(4, item.trackSize * scale * 0.45)}
-              stroke={hardware}
-              strokeWidth="1"
-            />
           </g>
-          {geom.overlap > 0 && (
-            <rect
-              data-testid="overlap"
-              data-mm={geom.overlap}
-              data-seat={item.slideSeat}
-              x={item.handleSide === "right" ? X(geom.leafX) : X(geom.x + geom.w)}
-              y={y}
-              width={Math.max(geom.overlap * scale, 1)}
-              height={h}
-              fill={item.slideSeat === "inside" ? "#ffffff" : "none"}
-              stroke="#111111"
-              strokeWidth="1"
-              strokeDasharray={item.slideSeat === "inside" ? "2 2" : undefined}
-            />
-          )}
-          <SlideWheels x={openingX} y={openingY + coverH + Math.max(5, item.trackSize * scale * 0.35)} w={openingW} scale={scale} />
-          <SlideChannel X={X} y={y} h={h} scale={scale} edge={slideTowards === "left" ? geom.x : geom.x + geom.w} overlap={Math.max(geom.overlap, faceMm)} towards={slideTowards} />
+          <SlideWheels x={x} y={openingY + coverH + Math.max(5, item.trackSize * scale * 0.35)} w={w} scale={scale} />
           <SlideArrow x={openingX} y={openingY} w={openingW} h={openingH} towards={slideTowards} />
         </g>
       )}
@@ -1581,7 +1658,6 @@ function PlanView({
   scale,
   depth,
   faceMm,
-  framed,
   selectedId,
   onDrag,
   onEdge,
@@ -1615,20 +1691,15 @@ function PlanView({
   highlightIds?: string[];
   highlightCeiling?: boolean;
 }) {
-  const face = faceMm * scale;
-  const depthFace = Math.max(faceMm, shower.material.profileDepth || 45);
-  const bandMm = Math.max(depthFace, 36);
-  const band = bandMm * scale;
   const shaped = shower.useDepth || shower.sides.length > 0 || shower.wc.enabled || shower.showerPoint.enabled || shower.ceiling.enabled;
   const room = shaped ? Math.max(shower.depth, 1) : depth;
   const back = Math.max(0, depth - room);
   const planItems = shower.items.filter((item) => item.kind !== "return");
+  const sectionMm = Math.max(1, shower.material.profileDepth || 45);
   const planDy = captions
     ? staggerBoxes(planItems.map((item) => {
-        const seat = planSeat(item, faceMm);
-        const y0 = depth - bandMm - seat;
         const label = planItemLabel(shower, item);
-        return { id: item.id, x: X(item.x + item.width / 2), y: PY(y0) + band / 2, hw: Math.max(28, label.length * 3.2), hh: 8 };
+        return { id: item.id, x: X(item.x + item.width / 2), y: PY(depth - sectionMm) - 14, hw: Math.max(28, label.length * 3.2), hh: 8 };
       }))
     : new Map<string, number>();
   return (
@@ -1655,40 +1726,45 @@ function PlanView({
       {shower.sides.map((side) =>
         side.ceiling.enabled ? <SideCeiling key={side.id} shower={shower} side={side} X={X} PY={PY} scale={scale} depth={depth} unit={unit} /> : null,
       )}
-      {framed && <MiterFrame x={X(0)} y={PY(back)} w={shower.width * scale} h={room * scale} t={Math.min(face, (room * scale) / 2 - 0.2, (shower.width * scale) / 2 - 0.2)} faceMm={faceMm} gaps={[]} />}
-      {!framed && <rect data-testid="plan-frame" x={X(0)} y={PY(back)} width={shower.width * scale} height={room * scale} fill="none" stroke="#243038" strokeWidth="0.6" />}
       {shower.items
         .filter((item) => item.kind !== "return")
         .map((item) => {
-          const seat = planSeat(item, faceMm);
-          const y0 = depth - bandMm - seat;
+          const wall = item.kind === "wall";
+          const yFront = PY(depth);
+          const yInner = PY(depth - sectionMm);
+          const bandTop = Math.min(yFront, yInner);
+          const band = Math.abs(yFront - yInner);
           return (
             <g key={`front-${item.id}`} data-testid="plan-item" data-kind={item.kind} data-seat={item.kind === "door" ? item.slideSeat : undefined} onPointerDown={onDrag ? (event) => onDrag(event, item) : undefined}>
-              <rect
-                x={X(item.x)}
-                y={PY(y0)}
-                width={Math.max(2, item.width * scale)}
-                height={band}
-                fill={planFill(item, item.id === selectedId)}
-                stroke="#111111"
-                strokeWidth="0.6"
-              />
+              {wall ? (
+                <rect x={X(item.x)} y={yFront - 3} width={Math.max(2, item.width * scale)} height={6} fill="#d9d3ce" stroke="#111111" strokeWidth="0.75" />
+              ) : (
+                <>
+                  {item.kind === "door" && (
+                    <rect x={X(item.x)} y={bandTop} width={Math.max(2, item.width * scale)} height={Math.max(band, 1)} fill="#1c1917" stroke="none" />
+                  )}
+                  <g data-testid="plan-section" fill="none" stroke="#111111">
+                    <line x1={X(item.x)} y1={yFront} x2={X(item.x + item.width)} y2={yFront} />
+                    <line x1={X(item.x)} y1={yInner} x2={X(item.x + item.width)} y2={yInner} />
+                  </g>
+                </>
+              )}
               {captions && (
               <SizeMark
                 x={X(item.x + item.width / 2)}
-                y={PY(y0) + band / 2}
+                y={bandTop - 14}
                 dy={planDy.get(item.id) ?? 0}
                 label={planItemLabel(shower, item)}
                 testId={item.kind === "wall" ? "plan-wall-size" : item.kind === "door" ? "plan-door-size" : "plan-fixed-size"}
               />
               )}
               {item.kind === "door" && item.doorStyle === "sliding" && (
-                <SlideArrow x={X(item.x)} y={PY(y0) - 16} w={item.width * scale} h={14} towards={item.handleSide === "right" ? "left" : "right"} />
+                <SlideArrow x={X(item.x)} y={bandTop - 22} w={item.width * scale} h={14} towards={item.handleSide === "right" ? "left" : "right"} />
               )}
               {item.kind === "door" && item.doorStyle === "openable" && (
-                <SwingMark X={X} PY={PY} hinge={frontHinge(item, y0 + bandMm)} swing={item.swing} />
+                <SwingMark X={X} PY={PY} hinge={frontHinge(item, depth)} swing={item.swing} />
               )}
-              <EdgeHandles x={X(item.x)} y={PY(y0)} w={Math.max(2, item.width * scale)} h={band} onEdge={onEdge ? (event, edge) => onEdge(event, item, edge) : undefined} />
+              <EdgeHandles x={X(item.x)} y={bandTop} w={Math.max(2, item.width * scale)} h={Math.max(16, band)} onEdge={onEdge ? (event, edge) => onEdge(event, item, edge) : undefined} />
             </g>
           );
         })}
@@ -1710,40 +1786,23 @@ function PlanView({
         .filter((item) => item.kind === "return")
         .map((item) => (
           <g key={`ret-${item.id}`} onPointerDown={onDrag ? (event) => onDrag(event, item) : undefined}>
-            <rect
-              x={X(item.x)}
-              y={PY(Math.max(0, depth - item.depth))}
-              width={Math.max(face, item.width * scale)}
-              height={Math.max(8, item.depth * scale)}
-              fill="#ffffff"
+            <line
+              x1={X(item.x + item.width / 2)}
+              y1={PY(depth)}
+              x2={X(item.x + item.width / 2)}
+              y2={PY(Math.max(0, depth - item.depth))}
               stroke="#111111"
+              strokeWidth="0.75"
             />
-            {framed && (
-              <MiterLines
-                x={X(item.x)}
-                y={PY(depth) - face}
-                w={face}
-                h={face}
-                t={face}
-                faceMm={faceMm}
-              />
-            )}
           </g>
         ))}
       {shower.sides.map((side) => (
-        <SidePlan key={side.id} shower={shower} side={side} X={X} PY={PY} scale={scale} depth={depth} back={back} face={face} faceMm={faceMm} framed={framed} selected={selectedId === side.id} captions={captions} onDrag={onDrag} onSide={onSide} onSideMove={onSideMove} onSelect={onSelect} />
+        <SidePlan key={side.id} shower={shower} side={side} X={X} PY={PY} scale={scale} depth={depth} back={back} selected={selectedId === side.id} captions={captions} onDrag={onDrag} onSide={onSide} onSideMove={onSideMove} onSelect={onSelect} />
       ))}
       <PlanChain shower={shower} X={X} PY={PY} depth={depth} unit={unit} scale={scale} showBalance={showBalance} />
       <PlanLayout shower={shower} X={X} PY={PY} depth={depth} back={back} faceMm={faceMm} unit={unit} scale={scale} />
     </g>
   );
-}
-
-function planFill(item: PlacedItem, selected: boolean): string {
-  if (item.kind === "wall") return "#d9d3ce";
-  if (selected) return "#f3f4f6";
-  if (item.kind === "door") return "#ffffff";
-  return "#f7f7f7";
 }
 
 function planSeat(item: PlacedItem, faceMm: number): number {
@@ -1860,9 +1919,6 @@ function SidePlan({
   scale,
   depth,
   back,
-  face,
-  faceMm,
-  framed,
   selected,
   captions = true,
   onDrag,
@@ -1877,9 +1933,6 @@ function SidePlan({
   scale: number;
   depth: number;
   back: number;
-  face: number;
-  faceMm: number;
-  framed: boolean;
   selected: boolean;
   captions?: boolean;
   onDrag?: (event: ReactPointerEvent, item: PlacedItem) => void;
@@ -1888,12 +1941,11 @@ function SidePlan({
   onSelect?: (id: string | null) => void;
 }) {
   const inward = side.attachX <= shower.width / 2 ? 1 : -1;
-  const thick = Math.max(face, faceMm * scale);
+  const thick = 2.2;
   const left = X(side.attachX) - thick / 2;
   const glass = side.face !== "wall";
-  const frame = Math.max(1, shower.material.profileDepth || 45);
   const span = Math.max(10, side.length);
-  const y0 = glass ? depth - frame - span : back;
+  const y0 = glass ? depth - span : back;
   const full = isFullPartition(shower, side);
   const pieces = side.door || side.items.length ? partitionItems(shower, side) : [];
   const pick = (event: ReactPointerEvent) => {
@@ -1909,14 +1961,14 @@ function SidePlan({
         y={PY(y0)}
         width={thick}
         height={span * scale}
-        fill={selected ? "#f3f4f6" : "#ffffff"}
-        stroke="#111111"
+        fill={side.face === "wall" ? "#d9d3ce" : "none"}
+        stroke={selected ? "#0e7490" : "#111111"}
         strokeWidth="0.6"
         onPointerDown={pick}
         style={{ cursor: onSideMove ? "ew-resize" : "pointer" }}
       />
       {pieces.map((item) => {
-        const along = glass ? depth - frame - item.x - item.width : back + item.x;
+        const along = glass ? depth - item.x - item.width : back + item.x;
         return (
           <g key={item.id} data-kind={item.kind} onPointerDown={onDrag ? (event) => onDrag(event, item) : undefined}>
             {item.kind === "door" && (
@@ -1933,12 +1985,11 @@ function SidePlan({
               />
             )}
             {item.kind === "door" && item.doorStyle === "openable" && (
-              <SwingMark X={X} PY={PY} hinge={sideHinge(shower, side, item, glass ? depth - frame : back, glass)} swing={item.swing} />
+              <SwingMark X={X} PY={PY} hinge={sideHinge(shower, side, item, glass ? depth : back, glass)} swing={item.swing} />
             )}
           </g>
         );
       })}
-      {framed && glass && <MiterLines x={left} y={PY(depth) - face} w={thick} h={face} t={face} faceMm={faceMm} />}
       {captions && (
         <SizeMark x={left + thick + 28} y={PY(y0 + span / 2)} label={`${formatMm(side.length)}`} testId="plan-side-size" />
       )}
@@ -2003,8 +2054,7 @@ function PlanLayout({
       )}
       {shower.sides.map((side) => {
         const glass = side.face !== "wall";
-        const frame = Math.max(1, shower.material.profileDepth || 45);
-        const y1 = glass ? depth - frame - side.length : back;
+        const y1 = glass ? depth - side.length : back;
         const y2 = y1 + side.length;
         return (
           <DimV
@@ -2450,25 +2500,16 @@ function PanelFace({
     const patId = `${figId}-doorfill-${Math.round(panel.x)}-${Math.round(panel.y)}`;
     const fill = custom ? (doorFill?.image ? `url(#${patId})` : doorFill?.colour || "#d8d2c8") : hpl ? "#efe6d6" : infill === "sheet" ? `url(#${figId}-sheet)` : `url(#${figId}-glass)`;
     const d = loops.map((loop) => ringPath(screen(loop))).join(" ");
-    const clipId = `${figId}-glass-${Math.round(panel.x)}-${Math.round(panel.y)}-${Math.round(panel.w)}-${Math.round(panel.h)}`;
     return (
       <g data-testid="glass-panel" data-infill={custom ? "custom" : infill} data-corners={loops[0].length} data-loops={loops.length}>
-        <defs>
-          <clipPath id={clipId}>
-            <path d={d} fillRule="evenodd" />
-          </clipPath>
-          {custom && doorFill?.image && (
+        {custom && doorFill?.image && (
+          <defs>
             <pattern id={patId} patternUnits="userSpaceOnUse" width={w} height={h}>
               <image href={doorFill.image} width={w} height={h} preserveAspectRatio="xMidYMid slice" />
             </pattern>
-          )}
-        </defs>
-        <path data-testid="glass-outline" d={d} fill={fill} fillOpacity={hpl || custom ? 1 : 0.92} fillRule="evenodd" stroke="none" />
-        {!hpl && !custom && w > 28 && h > 28 && (
-          <g clipPath={`url(#${clipId})`} stroke="#111111" strokeWidth="0.55" opacity="0.35" pointerEvents="none">
-            <line x1={X(panel.x) + 6} y1={Y(panel.y + panel.h) - 6} x2={X(panel.x + panel.w) - 6} y2={Y(panel.y) + 6} />
-          </g>
+          </defs>
         )}
+        <path data-testid="glass-outline" d={d} fill={fill} fillOpacity={hpl || custom ? 1 : 0.92} fillRule="evenodd" stroke="none" />
       </g>
     );
   }
@@ -2635,37 +2676,6 @@ function MiterFrame({
   );
 }
 
-function MiterLines({
-  x,
-  y,
-  w,
-  h,
-  t,
-  faceMm,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  t: number;
-  faceMm: number;
-}) {
-  const lines = [
-    [x, y, x + t, y + t],
-    [x + w, y, x + w - t, y + t],
-    [x + w, y + h, x + w - t, y + h - t],
-    [x, y + h, x + t, y + h - t],
-  ];
-  const weight = 0.6;
-  return (
-    <g data-testid="miter" data-miter="45" data-face={faceMm} data-inset={t} stroke="#1c1917" strokeWidth={weight} strokeLinecap="butt">
-      {lines.map((line, index) => (
-        <line key={index} x1={line[0]} y1={line[1]} x2={line[2]} y2={line[3]} data-dx={t} data-dy={t} />
-      ))}
-    </g>
-  );
-}
-
 function Channels({
   x,
   y,
@@ -2696,43 +2706,15 @@ function Channels({
 
 function SlideWheels({ x, y, w, scale }: { x: number; y: number; w: number; scale: number }) {
   const r = Math.max(3.2, 6.5 * scale);
-  const inset = Math.max(r + 3, Math.min(w * 0.16, 22 * scale + r));
+  const inset = Math.min(100 * scale, Math.max(r + 2, (w - r * 4) / 2));
   return (
-    <g data-testid="sliding-wheels" pointerEvents="none">
+    <g data-testid="sliding-wheels" data-inset-mm="100" pointerEvents="none">
       {[x + inset, x + w - inset].map((cx) => (
         <g key={cx} data-testid="sliding-wheel">
           <circle cx={cx} cy={y} r={r} fill="#ffffff" stroke="#111111" strokeWidth="1.15" />
           <circle cx={cx} cy={y} r={Math.max(1.2, r * 0.35)} fill="none" stroke="#111111" strokeWidth="0.8" />
         </g>
       ))}
-    </g>
-  );
-}
-
-function SlideChannel({
-  X,
-  y,
-  h,
-  scale,
-  edge,
-  overlap,
-  towards,
-}: {
-  X: (mm: number) => number;
-  y: number;
-  h: number;
-  scale: number;
-  edge: number;
-  overlap: number;
-  towards: Side;
-}) {
-  const span = Math.max(4, overlap);
-  const doorX = towards === "left" ? edge : edge - span;
-  const fixedX = towards === "left" ? edge - span : edge;
-  return (
-    <g data-testid="slide-channel" data-side={towards} data-length={Math.round(span)} pointerEvents="none" fill="none" stroke="#111111" strokeWidth="0.6">
-      <rect x={X(doorX)} y={y} width={span * scale} height={h} />
-      <rect x={X(fixedX)} y={y} width={span * scale} height={h} />
     </g>
   );
 }
@@ -3006,7 +2988,7 @@ function DoorHardware({
         <>
           <line x1={bodyX} y1={floor} x2={bodyX} y2={bodyY} stroke="#111111" strokeWidth="0.6" strokeDasharray="2 2" pointerEvents="none" />
           <text data-testid="handle-height" x={bodyX + sideSign * 36} y={floor - 14} textAnchor={item.handleSide === "left" ? "end" : "start"} className="panel-size" pointerEvents="none">
-            {formatLength(item.handleHeight, unit)} {unit} from floor
+            {formatLength(item.handleHeight, unit)} fl
           </text>
         </>
       )}
@@ -3041,8 +3023,8 @@ function DoorHardware({
           style={{ cursor: canDrag ? "move" : undefined }}
         >
           {item.handleKind === "pull"
-            ? `${item.pullAxis === "horizontal" ? "Horizontal" : "Vertical"} ${formatLength(lengthMm, unit)} · ${item.handleSide === "left" ? "Left" : "Right"}`
-            : `L-pipe · ${item.handleSide === "left" ? "Left" : "Right"}`}
+            ? `${formatLength(lengthMm, unit)} ${item.handleSide === "left" ? "L" : "R"}`
+            : `Pipe ${item.handleSide === "left" ? "L" : "R"}`}
         </text>
       )}
     </g>

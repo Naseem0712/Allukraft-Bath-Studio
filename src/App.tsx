@@ -28,7 +28,6 @@ import {
   parseBackup,
   BRAND_LOGO,
   balanceWidth,
-  ceilingModuleMm,
   cloneShower,
   describeHardware,
   designedSqFt,
@@ -208,6 +207,7 @@ export default function App() {
   const located = findItem(draft, selectedId);
   const selected = located?.item ?? null;
   const activeSide = draft.sides.find((side) => side.id === activeRun) ?? null;
+  const focusItem = Boolean(selected) || selectedId === WC_ID || selectedId === SHOWER_ID || draft.sides.some((side) => side.id === selectedId);
   const rows = useMemo(() => [...quote].sort((a, b) => a.serial - b.serial), [quote]);
   const amount = showerAmount(draft);
 
@@ -821,7 +821,6 @@ export default function App() {
               />
             </div>
           )}
-          <p className="hint">One unit for this quote. Changing it converts the numbers.</p>
           <div className="field-row">
             <LengthField label="Width" testId="width-input" mm={draft.width} unit={unit} onChange={(mm) => setDraft((current) => ({ ...current, width: Math.max(10, mm) }))} />
             <LengthField label="Height" testId="height-input" mm={draft.height} unit={unit} onChange={(mm) => setDraft((current) => normalizeShower({ ...current, height: Math.max(10, mm) }))} />
@@ -851,7 +850,7 @@ export default function App() {
             {" · "}Balance {formatLength(balanceWidth(draft.width, draft.items), unit)} {unit}
           </p>
           <p className="hint" data-testid="area-balance">
-            Area designed {designedSqFt(draft).toFixed(2)} sq ft of {openingSqFt(draft.width, draft.height).toFixed(2)} sq ft opening. Each added piece keeps its own size in the list below. The dashed gap on the drawing is the width still left.
+            Area {designedSqFt(draft).toFixed(2)} sq ft of {openingSqFt(draft.width, draft.height).toFixed(2)} sq ft.
           </p>
         </section>
 
@@ -859,7 +858,6 @@ export default function App() {
           <h2>Palette</h2>
           {(draft.sides.length > 0 || activeRun !== "front") && (
             <>
-              <p className="hint">Front or a return. Pieces drop onto that run.</p>
               <div className="run-switch" role="group" aria-label="Which run">
                 <button type="button" data-testid="run-front" aria-pressed={activeRun === "front"} onClick={() => { setActiveRun("front"); setSelectedId(null); }}>
                   Front
@@ -878,7 +876,7 @@ export default function App() {
               </div>
             </>
           )}
-          {activeSide && (
+          {activeSide && !focusItem && (
             <div className="side-box">
               <PartitionFields
                 side={activeSide}
@@ -904,6 +902,8 @@ export default function App() {
           </div>
           <div className="row-actions">
             <button type="button" data-testid="add-return" onClick={() => addKind("return")}>Add return</button>
+            <button type="button" data-testid="add-wc" onClick={() => placeFixture("wc")}>{draft.wc.enabled ? "Edit WC" : "Add WC"}</button>
+            <button type="button" data-testid="add-shower" onClick={() => placeFixture("shower")}>{draft.showerPoint.enabled ? "Edit shower" : "Add shower"}</button>
             <button
               type="button"
               data-testid="clear-items"
@@ -941,9 +941,9 @@ export default function App() {
           )}
         </section>
 
+        {!focusItem && (
         <section>
           <h2>Top fixed glass</h2>
-          <p className="hint">Optional lite. Full width, match below, or a custom width.</p>
           {draft.topFixed.enabled ? (
             <>
               <LengthField
@@ -1033,15 +1033,7 @@ export default function App() {
             </button>
           )}
         </section>
-
-        <section>
-          <h2>Item</h2>
-          <p className="hint">Click a door, fixed, wall, WC, or shower. Tools open here.</p>
-          <div className="toggle">
-            <button type="button" data-testid="add-wc" onClick={() => placeFixture("wc")}>{draft.wc.enabled ? "Edit WC" : "Add WC"}</button>
-            <button type="button" data-testid="add-shower" onClick={() => placeFixture("shower")}>{draft.showerPoint.enabled ? "Edit shower" : "Add shower"}</button>
-          </div>
-        </section>
+        )}
 
         <section>
           <h2>Material</h2>
@@ -1051,9 +1043,30 @@ export default function App() {
           </div>
           <div className="field-row">
             <LengthField label="Face" testId="profile-face" mm={draft.material.profileFace} unit={unit} onChange={(mm) => setProfilePart("profileFace", mm)} />
-            <LengthField label="Depth of profile" testId="profile-depth" mm={draft.material.profileDepth} unit={unit} onChange={(mm) => setProfilePart("profileDepth", mm)} />
+            <LengthField label="Depth" testId="profile-depth" mm={draft.material.profileDepth} unit={unit} onChange={(mm) => setProfilePart("profileDepth", mm)} />
           </div>
-          <p className="hint">Face 16 mm. Depth 45 mm. Corners are 45°.</p>
+          <label className="check depth-check">
+            <input
+              data-testid="print-section"
+              type="checkbox"
+              checked={draft.material.printSection !== false}
+              onChange={(event) => {
+                const on = event.target.checked;
+                setMaterial(
+                  on
+                    ? { printSection: true }
+                    : { printSection: false, quoteFace: draft.material.quoteFace || 16, quoteDepth: draft.material.quoteDepth || 45 },
+                );
+              }}
+            />
+            Print this section size
+          </label>
+          {draft.material.printSection === false && (
+            <div className="field-row" data-testid="quote-section">
+              <LengthField label="Actual face" testId="quote-face" mm={draft.material.quoteFace || 16} unit={unit} onChange={(quoteFace) => setMaterial({ quoteFace: Math.max(1, quoteFace) })} />
+              <LengthField label="Actual depth" testId="quote-depth" mm={draft.material.quoteDepth || 45} unit={unit} onChange={(quoteDepth) => setMaterial({ quoteDepth: Math.max(1, quoteDepth) })} />
+            </div>
+          )}
           <label className="stack">
             Profile name
             <input data-testid="profile-name" value={draft.material.profileName} onChange={(event) => setMaterial({ profileName: event.target.value })} />
@@ -1090,7 +1103,6 @@ export default function App() {
                 Sheet colour
                 <input data-testid="sheet-colour" value={draft.material.sheet.colour} onChange={(event) => setMaterial({ sheet: { ...draft.material.sheet, colour: event.target.value } })} />
               </label>
-              <p className="hint">Sheet price is the rate row. Ceiling has its own rate.</p>
             </>
           )}
           <label className="stack">
@@ -1212,7 +1224,6 @@ export default function App() {
                   onChange={(mm) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, customModuleMm: Math.max(50, mm), customModule: true } }))}
                 />
               )}
-              <p className="hint">One side follows the opening. The other is {formatLength(ceilingModuleMm(draft.ceiling), unit)} {unit}.</p>
               <div className="toggle" role="group" aria-label="Ceiling direction">
                 <button type="button" data-testid="ceiling-along-width" aria-pressed={draft.ceiling.along === "width"} onClick={() => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, along: "width" satisfies CeilingAlong } }))}>
                   Along width
@@ -1332,7 +1343,6 @@ export default function App() {
                 onRate={(next) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, priceFrom: "rate", ratePerSqFt: money(next) } }))}
                 onAmount={(next) => setDraft((current) => ({ ...current, ceiling: { ...current.ceiling, priceFrom: "amount", amount: money(next) } }))}
               />
-              <p className="hint">Whole room, or one rectangle. A return can have its own ceiling.</p>
             </div>
           )}
           <h3 className="subhead">Extra work</h3>
@@ -1380,7 +1390,6 @@ export default function App() {
 
         <section>
           <h2>Saved setup</h2>
-          <p className="hint">Save this setup, then reuse it.</p>
           <label className="stack">
             Name
             <input data-testid="setup-name" value={setupName} placeholder="Standard matt black" onChange={(event) => setSetupName(event.target.value)} />
@@ -1401,8 +1410,6 @@ export default function App() {
         </section>
 
         <section>
-          <h2>Optional starter</h2>
-          <p className="hint">Fills this size. Width, height, and depth stay editable.</p>
           <div className="presets">
             {[
               ["single", "Fixed, door, fixed"],
@@ -1590,7 +1597,6 @@ function BillEditor({ shower, onChange }: { shower: Shower; unit: UnitId; onChan
   return (
     <div className="bill-editor">
       <h3 className="subhead">Wastage</h3>
-      <p className="hint">Sheet size minus the drawn area is wastage.</p>
       {pieces.length === 0 ? (
         <p className="hint">Add a fixed panel or a door to see the sheet size.</p>
       ) : (

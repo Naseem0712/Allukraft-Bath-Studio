@@ -498,7 +498,7 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   margin: 0 auto;
   background: #fff;
   box-shadow: 0 12px 32px rgba(28, 43, 51, 0.16);
-  padding: 8mm 10mm 10mm;
+  padding: 8mm 8mm 6mm;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -521,9 +521,9 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .a4-logo-fallback { width: 28mm; height: 28mm; border: 1px solid #111; }
 .a4-head p { margin: 2px 0 0; font-size: 11px; color: #4d5f68; white-space: pre-wrap; }
 .a4-body { flex: 1 1 auto; min-height: 0; padding-top: 2px; display: flex; flex-direction: column; background: transparent; }
-.product-page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 2mm; background: transparent; }
-.quote-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; width: 100%; align-items: start; }
-.quote-left { display: flex; flex-direction: column; gap: 4mm; min-width: 0; }
+.product-page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 1.5mm; background: transparent; }
+.quote-pair { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto; gap: 4mm; width: 100%; flex: 0 0 auto; align-items: start; }
+.quote-left { display: flex; flex-direction: column; gap: 5mm; min-width: 0; height: auto; justify-content: flex-start; }
 .quote-plan, .quote-front, .quote-ceiling, .quote-return {
   margin: 0;
   border: 1px solid #111;
@@ -531,18 +531,27 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   position: relative;
   overflow: hidden;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
-.quote-plan { min-height: 78mm; height: 92mm; }
-.quote-front, .quote-return { height: 70mm; }
-.quote-ceiling { height: 48mm; }
-.quote-plan svg, .quote-front svg, .quote-ceiling svg, .quote-return svg { width: 100%; height: 100%; display: block; }
+.quote-plan, .quote-front, .quote-return, .quote-ceiling { height: auto; flex: 0 0 auto; }
+.quote-plan { align-self: start; }
+.quote-plan svg, .quote-front svg, .quote-ceiling svg, .quote-return svg {
+  width: 100%;
+  height: auto;
+  flex: 0 0 auto;
+  display: block;
+}
 .quote-plan figcaption, .quote-front figcaption, .quote-ceiling figcaption, .quote-return figcaption {
-  position: absolute;
-  left: 4px;
-  top: 2px;
+  position: static;
+  flex: none;
   z-index: 2;
+  margin: 0;
+  padding: 1px 6px 0;
   font-size: 12pt;
   font-weight: 700;
+  line-height: 1.2;
   background: transparent;
 }
 .product-squares {
@@ -571,8 +580,39 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   background: transparent;
 }
 .product-square svg { width: 100%; height: 100%; display: block; }
-.spec-split { display: grid; grid-template-columns: 1.35fr 0.75fr; gap: 3mm; align-items: start; }
-.spec-table th, .amount-table th { width: 28%; font-weight: 700; color: #1c2b33; }
+.spec-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 4mm; align-items: start; flex: none; }
+.spec-split > * { min-width: 0; overflow: hidden; }
+.spec-table th { width: 22%; font-weight: 700; color: #1c2b33; }
+.amount-table th { width: auto; font-weight: 700; color: #1c2b33; }
+.product-page .spec-table { table-layout: fixed; }
+.product-page .amount-table { table-layout: auto; }
+.product-page .bill { margin-top: 0; }
+.product-page .bill th,
+.product-page .bill td {
+  padding: 1px 4px;
+  letter-spacing: 0;
+  word-spacing: normal;
+  line-height: 1.2;
+  text-align: left;
+  vertical-align: top;
+}
+.product-page .spec-table th,
+.product-page .spec-table td {
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.product-page .spec-table th { white-space: nowrap; }
+.product-page .amount-table th,
+.product-page .amount-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.product-page .amount-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .amount-stack { display: grid; gap: 2mm; align-content: start; }
 .cover-desc { margin-top: 4mm; font-size: 12px; }
 .finish-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -627,14 +667,20 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .a4-draw .quote-figure { min-height: 0; height: 100%; }
 .a4-foot {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: baseline;
+  gap: 4mm;
+  flex: none;
   border-top: 1px solid #d5e0e4;
-  padding-top: 6px;
+  margin-top: 1.5mm;
+  padding-top: 2px;
   font-size: 10px;
   color: #64748b;
 }
+.a4-foot span, .a4-foot a { flex: none; white-space: nowrap; }
+.a4-foot [data-testid="page-number"] { margin-left: auto; }
 .a4-foot a {
+  margin-left: 0;
   color: #1565c0;
   font-weight: 700;
   text-decoration: underline;
@@ -739,7 +785,7 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
     height: 297mm !important;
     max-width: none !important;
     margin: 0 !important;
-    padding: 8mm !important;
+    padding: 8mm 8mm 6mm !important;
     box-sizing: border-box !important;
     box-shadow: none !important;
     overflow: hidden !important;
@@ -764,33 +810,35 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
     flex-direction: column !important;
   }
   .quote-pair {
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 0 0 auto !important;
     width: 100% !important;
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
+    grid-template-rows: auto !important;
     gap: 4mm !important;
-    align-items: stretch !important;
+    align-items: start !important;
   }
   .quote-left {
     display: flex !important;
     flex-direction: column !important;
-    gap: 3mm !important;
+    gap: 5mm !important;
     min-width: 0 !important;
-    min-height: 0 !important;
-    height: 100% !important;
+    height: auto !important;
+    justify-content: flex-start !important;
   }
   .quote-plan, .quote-front, .quote-return, .quote-ceiling {
     width: 100% !important;
-    min-width: 0 !important;
-    min-height: 0 !important;
     height: auto !important;
-    flex: 1 1 0 !important;
+    flex: 0 0 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
   }
-  .quote-plan { height: 100% !important; }
+  .quote-plan { align-self: start !important; }
+  .spec-split { flex: none !important; }
   .quote-plan svg, .quote-front svg, .quote-return svg, .quote-ceiling svg {
     width: 100% !important;
-    height: 100% !important;
+    height: auto !important;
+    flex: 0 0 auto !important;
     max-width: none !important;
   }
   .spec-split, .bill { width: 100% !important; }

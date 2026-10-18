@@ -16,12 +16,10 @@ import {
   handleSizeText,
   hardwareColourLabel,
   inr,
-  packageQuoteLines,
   productGlassAmount,
   productRate,
   profileLabel,
   quoteSubtotal,
-  sheetBreakdown,
   showerAmount,
   sizeLabel,
   splitMarks,
@@ -33,7 +31,6 @@ import {
   type CompanyProfile,
   type CustomerDetails,
   type FileNameMode,
-  type PackageLine,
   type PlacedItem,
   type QuoteEntry,
   type Shower,
@@ -275,12 +272,10 @@ export default function QuoteDocument({
             <div className="a4-body">{page.body}</div>
             <PageMark company={company} />
             <footer className="a4-foot">
-              <span data-testid="doc-footer">
-                This is a computer generated document ·{" "}
-                <a data-testid="app-link" href="https://www.allukraft.com">
-                  ALLUKRAFT<sup>™</sup> Bath Studio
-                </a>
-              </span>
+              <span data-testid="doc-footer">This is a computer generated document</span>
+              <a data-testid="app-link" href="https://www.allukraft.com">
+                ALLUKRAFT<sup>™</sup> Bath Studio
+              </a>
               <span data-testid="page-number">
                 Page {index + 1} of {pages.length}
               </span>
@@ -422,10 +417,8 @@ function ProductPage({
   include: PrintInclude;
 }) {
   const shower = entry.shower;
-  const lines = visibleLines(packageQuoteLines(shower, unit), include);
   const area = actualSqFt(shower);
   const waste = wastageExtraSqFt(shower);
-  const sheets = sheetBreakdown(shower);
   const glass = shower.material.glass;
   const doors = eachItem(shower).filter((row) => row.item.kind === "door");
   return (
@@ -549,10 +542,7 @@ function ProductPage({
               </tr>
               <tr>
                 <th>Wastage</th>
-                <td>
-                  {waste.toFixed(2)} sq ft · {sqmFromSqFt(waste).toFixed(2)} sq m · {inr(wastageAmountOf(shower))}
-                  {sheets.length > 0 ? ` · ${sheets.map((piece) => `${piece.name} ${piece.sheetLabel}`).join("; ")}` : ""}
-                </td>
+                <td>{waste.toFixed(2)} sq ft · {sqmFromSqFt(waste).toFixed(2)} sq m</td>
               </tr>
               {shower.extraWork.kind !== "none" && (
                 <tr data-testid="extra-work-line">
@@ -568,45 +558,38 @@ function ProductPage({
           </table>
         )}
         <div className="amount-stack">
-          <table className="bill amount-table" data-testid="qty-table">
+          <table className="bill amount-table" data-testid="amount-table">
             <tbody>
-              <tr>
+              <tr data-testid="qty-table">
                 <th>Qty</th>
                 <td>1</td>
               </tr>
+              {include.amounts && (
+                <>
+                  <tr>
+                    <th>Rate / sq ft</th>
+                    <td>{inr(productRate(shower))}</td>
+                  </tr>
+                  <tr>
+                    <th>Actual area</th>
+                    <td>{area.toFixed(2)} sq ft</td>
+                  </tr>
+                  <tr data-testid="package-line">
+                    <th>Amount</th>
+                    <td>{inr(productGlassAmount(shower))}</td>
+                  </tr>
+                  <tr data-testid="wastage-line">
+                    <th>Wastage</th>
+                    <td>{inr(wastageAmountOf(shower))}</td>
+                  </tr>
+                  <tr>
+                    <th>Product total</th>
+                    <td>{inr(showerAmount(shower))}</td>
+                  </tr>
+                </>
+              )}
             </tbody>
           </table>
-          {include.amounts && (
-            <table className="bill amount-table" data-testid="amount-table">
-              <tbody>
-                <tr>
-                  <th>Rate / sq ft</th>
-                  <td>{inr(productRate(shower))}</td>
-                </tr>
-                <tr>
-                  <th>Actual area</th>
-                  <td>{area.toFixed(2)} sq ft</td>
-                </tr>
-                <tr data-testid="package-line">
-                  <th>Amount</th>
-                  <td>{inr(productGlassAmount(shower))}</td>
-                </tr>
-                {lines.filter((line) => line.kind !== "package").map((line) => (
-                  <tr key={line.id} data-testid={line.kind === "extra" ? "extra-amount-line" : line.kind === "wastage" ? "wastage-line" : line.kind === "cut" ? "cut-line" : line.kind === "handle" ? "handle-line" : line.kind === "legs" ? "legs-line" : line.kind === "rail" ? "rail-line" : line.kind === "ceiling" ? "ceiling-line" : "lock-line"}>
-                    <th>{lineLabel(line, include)}{line.photo && include.handlePhoto ? "" : ""}</th>
-                    <td>
-                      {inr(line.amount)}
-                      {line.photo && include.handlePhoto ? <img className="bill-photo" src={line.photo} alt="" data-testid="quote-handle-photo" /> : null}
-                    </td>
-                  </tr>
-                ))}
-                <tr>
-                  <th>Product total</th>
-                  <td>{inr(showerAmount(shower))}</td>
-                </tr>
-              </tbody>
-            </table>
-          )}
         </div>
       </div>
       <p className="doc-spec">{sizeLabel(shower, unit)}</p>
@@ -700,20 +683,6 @@ function hardwareRows(shower: Shower, unit: UnitId, include: PrintInclude): stri
       return `${place}Wheel ${item.wheelName.trim() || "wheel"}, soft-closing ${item.softClose ? "yes" : "no"}, ${handle}, ${handleSizeText(item, unit)}, ${colour}`;
     })
     .join("; ");
-}
-
-function visibleLines(lines: PackageLine[], include: PrintInclude): PackageLine[] {
-  return lines.filter((line) => {
-    if (line.kind === "handle" && !include.handleName && !include.handlePhoto && !include.amounts) return false;
-    if (line.kind === "lock" && !include.lockName && !include.amounts) return false;
-    return true;
-  });
-}
-
-function lineLabel(line: PackageLine, include: PrintInclude): string {
-  if (line.kind === "handle" && !include.handleName) return "Handle";
-  if (line.kind === "lock" && !include.lockName) return "Lock";
-  return line.description;
 }
 
 function Rich({ text }: { text: string }) {

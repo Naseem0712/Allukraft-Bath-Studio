@@ -274,6 +274,8 @@ export interface Ceiling {
 
 export interface UserDim {
   id: string;
+  /** front, plan, or the return id. A measurement stays on that view. */
+  view: string;
   ax: number;
   ay: number;
   bx: number;
@@ -335,6 +337,12 @@ export interface Material {
   profileName: string;
   profileFace: number;
   profileDepth: number;
+  /** When true, the quote prints the drawn face and depth. */
+  printSection: boolean;
+  /** Actual face printed when printSection is off. The drawing stays on profileFace. */
+  quoteFace: number;
+  /** Actual depth printed when printSection is off. */
+  quoteDepth: number;
   colour: ColourName;
   origin: Origin;
   infill: Infill;
@@ -512,6 +520,9 @@ export function defaultMaterial(): Material {
     profileName: "16 × 45",
     profileFace: 16,
     profileDepth: 45,
+    printSection: true,
+    quoteFace: 16,
+    quoteDepth: 45,
     colour: "Grey",
     origin: "Indian",
     infill: "glass",
@@ -634,6 +645,9 @@ function normalizeMaterial(input?: Partial<Material> | null): Material {
     hardwareColour,
     profileFace: Math.max(1, num(raw.profileFace, base.profileFace)),
     profileDepth: Math.max(1, num(raw.profileDepth, base.profileDepth)),
+    printSection: raw.printSection === false ? false : true,
+    quoteFace: Math.max(1, num(raw.quoteFace, 16)),
+    quoteDepth: Math.max(1, num(raw.quoteDepth, 45)),
     ratePerSqFt: money(Math.max(0, num(raw.ratePerSqFt, base.ratePerSqFt))),
     hardwareMatchProfile: raw.hardwareMatchProfile ?? true,
     hardwareColourName: raw.hardwareColourName ?? "",
@@ -721,6 +735,7 @@ export function normalizeShower(input?: Partial<Shower> | null): Shower {
     ceiling: normalizeCeiling(ceiling),
     dims: (raw.dims ?? []).slice(0, 40).map((dim) => ({
       id: dim.id || uid("dim"),
+      view: dim.view === "plan" || (typeof dim.view === "string" && dim.view.trim()) ? dim.view : "front",
       ax: num(dim.ax, 0),
       ay: num(dim.ay, 0),
       bx: num(dim.bx, 0),
@@ -1639,8 +1654,16 @@ export interface PackageLine {
   photo: string;
 }
 
+function correctHandleSpelling(text: string): string {
+  return text.replace(/ahndle/gi, (word) => {
+    if (word === word.toUpperCase()) return "HANDLE";
+    if (word[0] === "A") return "Handle";
+    return "handle";
+  });
+}
+
 export function handleOptionName(item: PlacedItem): string {
-  const typed = item.handleName.trim();
+  const typed = correctHandleSpelling(item.handleName.trim());
   if (typed) return typed;
   if (item.handleKind === "lpipe") return "L-type round pipe";
   if (item.handleKind === "pull") {
@@ -2184,6 +2207,7 @@ export function hardwareForQuote(shower: Shower): string {
 
 export function profileLabel(material: Material): string {
   if (material.finish === "glass") return "Glass only";
+  if (material.printSection === false) return `${formatMm(material.quoteFace || 16)} × ${formatMm(material.quoteDepth || 45)} mm`;
   return `${material.profileName} mm`;
 }
 
@@ -2192,11 +2216,12 @@ export function sizeLabel(shower: Shower, unit: UnitId): string {
 }
 
 export function inr(value: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
+  const amount = Math.round(Number.isFinite(value) ? value : 0);
+  const body = new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(Math.round(Number.isFinite(value) ? value : 0));
+  }).format(amount);
+  return `₹${body}`;
 }
 
 export function todayLabel(date = new Date()): string {

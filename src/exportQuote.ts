@@ -54,12 +54,21 @@ function ownText(el: Element): string {
     .join(" ");
 }
 
+/** Helvetica has no rupee. The raw sign becomes a superscript 1 in the PDF. */
+function pdfSafeText(text: string): string {
+  return text.replace(/\u20B9/g, "Rs. ");
+}
+
 /** Copy paint onto the clone in user units so the PDF lines match the quote page. */
 function paintForPdf(live: SVGSVGElement, clone: SVGSVGElement, displayWidthMm: number) {
   const box = live.viewBox?.baseVal;
   const vbW = box && box.width > 0 ? box.width : live.clientWidth || 720;
   const perPx = (25.4 / 96) * (vbW / Math.max(1, displayWidthMm));
-  const sources = [...live.querySelectorAll("*")];
+  // The preview stroke lives in the SVG stylesheet. svg2pdf would keep that
+  // pixel value and shrink it with the viewBox, so the file would not match
+  // the screen. Drop the style and keep the computed width copied below.
+  clone.querySelectorAll("style").forEach((node) => node.remove());
+  const sources = [...live.querySelectorAll("*")].filter((el) => el.tagName.toLowerCase() !== "style");
   const copies = [...clone.querySelectorAll("*")];
   sources.forEach((src, index) => {
     const dst = copies[index];
@@ -159,7 +168,7 @@ export async function exportPdf(pages: HTMLElement[], filename: string): Promise
         pdf.setFont("helvetica", bold ? "bold" : "normal");
         pdf.setFontSize(size);
         pdf.setTextColor(17, 17, 17);
-        const lines = pdf.splitTextToSize(text, Math.max(8, wOf(rect.width)));
+        const lines = pdf.splitTextToSize(pdfSafeText(text), Math.max(8, wOf(rect.width)));
         pdf.text(lines, xOf(rect.left), yOf(rect.top) + size * 0.32);
       }
     }
