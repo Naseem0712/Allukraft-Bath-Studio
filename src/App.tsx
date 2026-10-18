@@ -117,6 +117,20 @@ import {
 
 const UNITS: UnitId[] = ["mm", "cm", "inch", "ft"];
 
+/** Drop placed pieces and marks. Opening size, depth, and quote settings stay. */
+function clearPlacedDesign(shower: Shower): Shower {
+  return {
+    ...shower,
+    items: [],
+    sides: [],
+    dims: [],
+    labelNudge: {},
+    wc: { ...shower.wc, enabled: false },
+    showerPoint: { ...shower.showerPoint, enabled: false },
+    ceiling: { ...shower.ceiling, enabled: false, lights: [], image: "" },
+  };
+}
+
 const PALETTE: { kind: ItemKind; label: string; note: string }[] = [
   { kind: "fixed", label: "Fixed glass", note: "Into the frame" },
   { kind: "door", label: "Door", note: "Sliding or openable" },
@@ -366,9 +380,21 @@ export default function App() {
       return;
     }
     const serial = nextSerial;
-    setQuote((list) => [...list, { serial, shower: cloneShower(draft) }]);
+    const savedShower = cloneShower(draft);
+    setQuote((list) => [...list, { serial, shower: savedShower }]);
     setNextSerial(serial + 1);
+    setDraft(clearPlacedDesign(draft));
+    setSelectedId(null);
+    setActiveRun("front");
+    setDimArmed(false);
     setStatus(`Added as S.No ${serial}.`);
+  }
+
+  function clearCanvas() {
+    setDraft((current) => clearPlacedDesign(current));
+    setSelectedId(null);
+    setActiveRun("front");
+    setDimArmed(false);
   }
 
   function beginEdit(serial: number) {
@@ -1484,6 +1510,7 @@ export default function App() {
           onUndo={undoDraft}
           onRedo={redoDraft}
           onDuplicate={duplicateSelected}
+          onClearCanvas={clearCanvas}
           canUndo={historyTick >= 0 && history.current.past.length > 0}
           canRedo={history.current.future.length > 0}
         />

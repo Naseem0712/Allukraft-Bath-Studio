@@ -25,6 +25,7 @@ interface DrawingProps {
   onUndo?: () => void;
   onRedo?: () => void;
   onDuplicate?: () => void;
+  onClearCanvas?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
 }
@@ -36,7 +37,7 @@ function clampZoom(value: number): number {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value * 100) / 100));
 }
 
-export default function Drawing({ shower, unit, selectedId, activeRun, onSelect, onMove, onResize, onResizeSide, onMoveSide, onMoveFixture, projectRef, watermark, dimArmed, onArmDim, onAddDim, onMoveDim, onNudgeLabel, onNudgeHandle, onMoveView, onUndo, onRedo, onDuplicate, canUndo, canRedo }: DrawingProps) {
+export default function Drawing({ shower, unit, selectedId, activeRun, onSelect, onMove, onResize, onResizeSide, onMoveSide, onMoveFixture, projectRef, watermark, dimArmed, onArmDim, onAddDim, onMoveDim, onNudgeLabel, onNudgeHandle, onMoveView, onUndo, onRedo, onDuplicate, onClearCanvas, canUndo, canRedo }: DrawingProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const spaceRef = useRef(false);
   const panRef = useRef<{ id: number; x: number; y: number; px: number; py: number } | null>(null);
@@ -187,6 +188,7 @@ export default function Drawing({ shower, unit, selectedId, activeRun, onSelect,
           <button type="button" data-testid="undo" onClick={onUndo} disabled={!canUndo}>Undo</button>
           <button type="button" data-testid="redo" onClick={onRedo} disabled={!canRedo}>Redo</button>
           <button type="button" data-testid="duplicate" onClick={onDuplicate}>Duplicate</button>
+          <button type="button" data-testid="clear-canvas" onClick={onClearCanvas}>Clear canvas</button>
           <button type="button" data-testid="zoom-out" onClick={() => zoomButton(1 / 1.1)}>Zoom out</button>
           <button type="button" data-testid="zoom-in" onClick={() => zoomButton(1.1)}>Zoom in</button>
           <span data-testid="zoom-level">{Math.round(zoom * 100)}%</span>
