@@ -520,10 +520,10 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 }
 .a4-logo-fallback { width: 28mm; height: 28mm; border: 1px solid #111; }
 .a4-head p { margin: 2px 0 0; font-size: 11px; color: #4d5f68; white-space: pre-wrap; }
-.a4-body { flex: 1 1 auto; min-height: 0; padding-top: 2px; display: flex; flex-direction: column; background: transparent; }
-.product-page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 1.5mm; background: transparent; }
-.quote-pair { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto; gap: 4mm; width: 100%; flex: 0 0 auto; align-items: start; }
-.quote-left { display: flex; flex-direction: column; gap: 5mm; min-width: 0; height: auto; justify-content: flex-start; }
+.a4-body { flex: 1 1 auto; min-height: 0; padding-top: 2px; display: flex; flex-direction: column; background: transparent; overflow: hidden; }
+.product-page { flex: 1 1 auto; min-height: 0; height: 100%; display: flex; flex-direction: column; gap: 1.5mm; background: transparent; overflow: hidden; }
+.quote-pair { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr); gap: 4mm; width: 100%; flex: 1 1 auto; min-height: 0; align-items: stretch; overflow: hidden; }
+.quote-left { display: flex; flex-direction: column; gap: 5mm; min-width: 0; min-height: 0; height: 100%; justify-content: flex-start; overflow: hidden; }
 .quote-plan, .quote-front, .quote-ceiling, .quote-return {
   margin: 0;
   border: 1px solid #111;
@@ -535,13 +535,24 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   flex-direction: column;
   min-width: 0;
 }
-.quote-plan, .quote-front, .quote-return, .quote-ceiling { height: auto; flex: 0 0 auto; }
-.quote-plan { align-self: start; }
+.quote-left > .quote-front,
+.quote-left > .quote-return,
+.quote-left > .quote-ceiling {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+}
+.quote-plan { align-self: start; height: 100%; max-height: 100%; min-height: 0; }
 .quote-plan svg, .quote-front svg, .quote-ceiling svg, .quote-return svg {
   width: 100%;
-  height: auto;
-  flex: 0 0 auto;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
   display: block;
+  aspect-ratio: auto;
+  overflow: hidden;
 }
 .quote-plan figcaption, .quote-front figcaption, .quote-ceiling figcaption, .quote-return figcaption {
   position: static;
@@ -802,44 +813,59 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
     width: 100% !important;
     max-width: none !important;
   }
-  .a4-body { flex: 1 1 auto; min-height: 0; }
+  .a4-body { flex: 1 1 auto; min-height: 0; overflow: hidden !important; }
   .product-page {
     flex: 1 1 auto;
     min-height: 0;
+    height: 100%;
+    overflow: hidden !important;
     display: flex !important;
     flex-direction: column !important;
   }
   .quote-pair {
-    flex: 0 0 auto !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
     width: 100% !important;
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
-    grid-template-rows: auto !important;
+    grid-template-rows: minmax(0, 1fr) !important;
     gap: 4mm !important;
-    align-items: start !important;
+    align-items: stretch !important;
+    overflow: hidden !important;
   }
   .quote-left {
     display: flex !important;
     flex-direction: column !important;
     gap: 5mm !important;
     min-width: 0 !important;
-    height: auto !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden !important;
     justify-content: flex-start !important;
   }
   .quote-plan, .quote-front, .quote-return, .quote-ceiling {
     width: 100% !important;
-    height: auto !important;
-    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
     display: flex !important;
     flex-direction: column !important;
   }
-  .quote-plan { align-self: start !important; }
-  .spec-split { flex: none !important; }
+  .quote-left > .quote-front,
+  .quote-left > .quote-return,
+  .quote-left > .quote-ceiling {
+    flex: 1 1 0 !important;
+    max-height: 100% !important;
+  }
+  .quote-plan { align-self: start !important; max-height: 100% !important; }
+  .spec-split { flex: none !important; position: static !important; }
   .quote-plan svg, .quote-front svg, .quote-return svg, .quote-ceiling svg {
     width: 100% !important;
-    height: auto !important;
-    flex: 0 0 auto !important;
-    max-width: none !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+    flex: 1 1 auto !important;
+    aspect-ratio: auto !important;
+    overflow: hidden !important;
   }
   .spec-split, .bill { width: 100% !important; }
   .totals-wrap { width: 100% !important; justify-content: stretch !important; }

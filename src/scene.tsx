@@ -540,10 +540,10 @@ export default function ShowerFigure({
     <svg
       ref={svgRef}
       className="canvas"
-      width={width}
-      height={svgH}
+      width={tightQuote ? "100%" : width}
+      height={tightQuote ? "100%" : svgH}
       viewBox={tightQuote && quoteBox ? `${quoteBox.x} ${quoteBox.y} ${quoteBox.w} ${quoteBox.h}` : frameBox}
-      style={tightQuote ? { aspectRatio: `${width} / ${svgH}` } : undefined}
+      overflow={tightQuote ? "hidden" : undefined}
       preserveAspectRatio="xMidYMid meet"
       data-testid="canvas"
       data-mode={mode}

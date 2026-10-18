@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import ShowerFigure from "./scene";
 import { exportExcel, exportPdf, fileBase, printQuote, type PrintInclude } from "./exportQuote";
 import {
@@ -78,7 +78,37 @@ export default function QuoteDocument({
   const [busy, setBusy] = useState("");
   const [include, setInclude] = useState<PrintInclude>(INCLUDE_ALL);
   const date = todayLabel();
-  const pages = pageBodies({ rows, unit, company, customer, quoteNo, date, include });
+  const layoutKey = rows.map((entry) => `${entry.serial}:${entry.shower.sides.length}:${entry.shower.items.length}:${entry.shower.notes.length}:${entry.shower.width}:${entry.shower.height}`).join("|") + `|${include.elevation}${include.plan}${include.details}${unit}`;
+  const [layoutSig, setLayoutSig] = useState(layoutKey);
+  const [splitSerials, setSplitSerials] = useState<number[]>([]);
+  if (layoutSig !== layoutKey) {
+    setLayoutSig(layoutKey);
+    setSplitSerials([]);
+  }
+  const pages = pageBodies({ rows, unit, company, customer, quoteNo, date, include, splitSerials });
+  useLayoutEffect(() => {
+    const found: number[] = [];
+    document.querySelectorAll<HTMLElement>('[data-testid="product-page"][data-part="both"]').forEach((page) => {
+      const serial = Number(page.dataset.serial);
+      const article = page.closest(".a4-page");
+      const foot = article?.querySelector(".a4-foot");
+      const details = page.querySelector("[data-testid=details-block]");
+      const drawings = page.querySelector("[data-testid=quote-drawings]");
+      if (!article || !foot || !details || !drawings || !Number.isFinite(serial)) return;
+      const pageBox = article.getBoundingClientRect();
+      const footTop = foot.getBoundingClientRect().top;
+      const drawBox = drawings.getBoundingClientRect();
+      const detailsBox = details.getBoundingClientRect();
+      const minDraw = (70 / 297) * pageBox.height;
+      const overlaps = detailsBox.top < drawBox.bottom - 1;
+      const pastFoot = detailsBox.bottom > footTop + 1 || drawBox.bottom > footTop + 1;
+      const crushed = drawBox.height > 0 && drawBox.height < minDraw;
+      if (overlaps || pastFoot || crushed) found.push(serial);
+    });
+    if (!found.length) return;
+    const next = [...found].sort((a, b) => a - b);
+    setSplitSerials((prev) => (prev.length === next.length && prev.every((n, i) => n === next[i]) ? prev : next));
+  }, [layoutKey, pages.length]);
   const base = fileBase(fileMode, customer.name, quoteNo);
 
   async function onPdf() {
@@ -331,6 +361,7 @@ function pageBodies({
   quoteNo,
   date,
   include,
+  splitSerials,
 }: {
   rows: QuoteEntry[];
   unit: UnitId;
@@ -339,6 +370,7 @@ function pageBodies({
   quoteNo: string;
   date: string;
   include: PrintInclude;
+  splitSerials: readonly number[];
 }) {
   const subtotal = quoteSubtotal(rows);
   const gst = subtotal * GST_RATE;
@@ -347,12 +379,13 @@ function pageBodies({
       key: "cover",
       body: <CoverPage customer={customer} quoteNo={quoteNo} date={date} description={company.description} />,
     },
-    ...[...rows].sort((a, b) => a.serial - b.serial).flatMap((entry) => [
-      {
-        key: `shower-${entry.serial}`,
-        body: <ProductPage entry={entry} unit={unit} company={company} include={include} />,
-      },
-    ]),
+    ...[...rows].sort((a, b) => a.serial - b.serial).flatMap((entry) => {
+      const parts: Array<"both" | "drawings" | "details"> = splitSerials.includes(entry.serial) ? ["drawings", "details"] : ["both"];
+      return parts.map((part) => ({
+        key: `shower-${entry.serial}-${part}`,
+        body: <ProductPage entry={entry} unit={unit} company={company} include={include} part={part} />,
+      }));
+    }),
     {
       key: "close",
       body: (
@@ -410,22 +443,29 @@ function ProductPage({
   unit,
   company,
   include,
+  part,
 }: {
   entry: QuoteEntry;
   unit: UnitId;
   company: CompanyProfile;
   include: PrintInclude;
+  part: "both" | "drawings" | "details";
 }) {
   const shower = entry.shower;
   const area = actualSqFt(shower);
   const waste = wastageExtraSqFt(shower);
   const glass = shower.material.glass;
   const doors = eachItem(shower).filter((row) => row.item.kind === "door");
+  const showDrawings = part !== "details";
+  const showDetails = part !== "drawings";
+  const stack = (include.elevation ? 1 : 0) + (include.elevation ? shower.sides.length : 0) + (shower.ceiling.enabled ? 1 : 0);
+  const planHeight = stack > 1 ? `calc((100% - ${(stack - 1) * 5}mm) / ${stack})` : "100%";
   return (
-    <div className="product-page" data-testid="product-page">
+    <div className="product-page" data-testid="product-page" data-serial={entry.serial} data-part={part}>
       <h3 className="doc-title" data-testid="product-title">S.No {entry.serial}{shower.location.trim() ? ` · ${shower.location.trim()}` : ""}</h3>
+      {showDrawings && (
       <div className="quote-pair" data-testid="quote-drawings">
-        <div className="quote-left">
+        <div className="quote-left" data-stack={stack}>
           {include.elevation && (
             <figure className="quote-front" data-testid="elevation-square">
               <figcaption>Elevation</figcaption>
@@ -471,7 +511,7 @@ function ProductPage({
           )}
         </div>
         {include.plan && (
-          <figure className="quote-plan" data-testid="plan-square">
+          <figure className="quote-plan" data-testid="plan-square" style={{ height: planHeight, maxHeight: planHeight }}>
             <figcaption>Plan</figcaption>
             <ShowerFigure
               shower={shower}
@@ -487,6 +527,8 @@ function ProductPage({
           </figure>
         )}
       </div>
+      )}
+      {showDetails && (
       <div className="spec-split" data-testid="details-block">
         {include.details && (
           <table className="bill spec-table" data-testid="spec-table">
@@ -592,6 +634,7 @@ function ProductPage({
           </table>
         </div>
       </div>
+      )}
       <p className="doc-spec">{sizeLabel(shower, unit)}</p>
     </div>
   );
