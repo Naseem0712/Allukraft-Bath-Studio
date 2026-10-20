@@ -421,6 +421,11 @@ export interface Shower {
   hardwareBreakdown: boolean;
   /** Print wastage area and wastage amount. On unless the user unticks it. */
   showWastage: boolean;
+  /**
+   * Price-column area adds wastage area when this is on.
+   * Unset follows whether wastage is already in the product math.
+   */
+  areaIncWastage?: boolean;
   extraHardware: ExtraHardware[];
   extraWork: ExtraWorkSpec;
   material: Material;
@@ -836,6 +841,7 @@ export function normalizeShower(input?: Partial<Shower> | null): Shower {
     notes: (raw.notes ?? "").slice(0, NOTE_LIMIT),
     hardwareBreakdown: raw.hardwareBreakdown === true,
     showWastage: raw.showWastage !== false,
+    areaIncWastage: raw.areaIncWastage === true ? true : raw.areaIncWastage === false ? false : undefined,
     extraHardware: normalizeExtraHardware(raw.extraHardware),
     extraWork: normalizeExtra(raw.extraWork),
     material,
@@ -1998,6 +2004,22 @@ export function wastageAmountOf(shower: Shower): number {
   return wastagePrice(shower).amount;
 }
 
+/** Tick state. Missing means on only when wastage area is already in the total. */
+export function areaIncWastageChecked(shower: Shower): boolean {
+  if (shower.areaIncWastage === false) return false;
+  if (shower.areaIncWastage === true) return true;
+  return wastageExtraSqFt(shower) > 0.0001;
+}
+
+/** Area printed in the price column. Does not change the product total. */
+export function quotedAreaSqFt(shower: Shower): number {
+  const actual = actualSqFt(shower);
+  if (!areaIncWastageChecked(shower)) return actual;
+  const waste = wastageExtraSqFt(shower);
+  if (waste <= 0.0001) return actual;
+  return actual + waste;
+}
+
 export function ceilingAreaSqFt(ceiling: Ceiling, width: number, depth: number): number {
   if (!ceiling.enabled) return 0;
   const span = ceilingSpan(ceiling, width, Math.max(depth, 1));
@@ -2254,11 +2276,19 @@ export function showerAmount(shower: Shower): number {
   return packageQuoteLines(shower, "mm").reduce((sum, line) => sum + line.amount, 0);
 }
 
-/** Hardware that has a rate, for the optional price-column breakdown. */
+/** Hardware rows for the price column. A zero rate stays name-only and is not added again to the total. */
 export function hardwarePriceLines(shower: Shower): { id: string; name: string; rate: number; amount: number }[] {
-  return packageQuoteLines(shower, "mm")
-    .filter((line) => (line.kind === "handle" || line.kind === "lock" || line.kind === "hardware") && line.rate > 0)
+  const priced = packageQuoteLines(shower, "mm")
+    .filter((line) => line.kind === "handle" || line.kind === "lock" || line.kind === "hardware")
     .map((line) => ({ id: line.id, name: line.description, rate: line.rate, amount: line.amount }));
+  const seen = new Set(priced.map((line) => line.id));
+  const blanks = normalizeShower(shower).extraHardware.flatMap((row) => {
+    const name = row.name.trim();
+    const id = `hardware:${row.id}`;
+    if (!name || seen.has(id) || money(row.rate) > 0) return [];
+    return [{ id, name, rate: 0, amount: 0 }];
+  });
+  return [...priced, ...blanks];
 }
 
 /** Keep emoji together for a font span. The stored note text is not changed. */

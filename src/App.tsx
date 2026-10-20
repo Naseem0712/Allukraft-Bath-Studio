@@ -15,6 +15,7 @@ import {
   WOOD_FINISHES,
   GST_RATE,
   actualSqFt,
+  areaIncWastageChecked,
   ceilingAreaSqFt,
   ceilingPrice,
   glassPrice,
@@ -2288,6 +2289,15 @@ function ExtraHardwareFields({ shower, onChange }: { shower: Shower; onChange: (
           onChange={(event) => onChange({ ...shower, showWastage: event.target.checked })}
         />
         Show wastage on the quote
+      </label>
+      <label className="check">
+        <input
+          data-testid="area-inc-wastage"
+          type="checkbox"
+          checked={areaIncWastageChecked(shower)}
+          onChange={(event) => onChange({ ...shower, areaIncWastage: event.target.checked })}
+        />
+        Area inc wastage
       </label>
       <label className="check">
         <input

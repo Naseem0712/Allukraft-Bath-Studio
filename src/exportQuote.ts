@@ -320,6 +320,11 @@ export async function exportPdf(pages: HTMLElement[], filename: string): Promise
         if (rect.width < 2) continue;
         pdf.line(xOf(rect.left), yOf(rect.bottom), xOf(rect.right), yOf(rect.bottom));
       }
+      for (const line of page.querySelectorAll(".sign-line")) {
+        const rect = line.getBoundingClientRect();
+        if (rect.width < 2) continue;
+        pdf.line(xOf(rect.left), yOf(rect.bottom), xOf(rect.right), yOf(rect.bottom));
+      }
 
       for (const el of page.querySelectorAll("h1, h2, h3, p, th, td, figcaption, li, span, strong, em, a")) {
         if (el.closest("svg") || el.closest(".a4-watermark")) continue;

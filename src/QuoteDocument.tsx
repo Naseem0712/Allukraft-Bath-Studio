@@ -16,10 +16,12 @@ import {
   handleSizeText,
   hardwareColourLabel,
   hardwarePriceLines,
+  companyTitle,
   inr,
   productGlassAmount,
   productRate,
   profileLabel,
+  quotedAreaSqFt,
   quoteSubtotal,
   showerAmount,
   sizeLabel,
@@ -456,6 +458,7 @@ function ProductPage({
   const shower = entry.shower;
   const area = actualSqFt(shower);
   const waste = wastageExtraSqFt(shower);
+  const priceArea = quotedAreaSqFt(shower);
   const glass = shower.material.glass;
   const doors = eachItem(shower).filter((row) => row.item.kind === "door");
   const showDrawings = part !== "details";
@@ -616,9 +619,9 @@ function ProductPage({
                     <th>Rate / sq ft</th>
                     <td>{inr(productRate(shower))}</td>
                   </tr>
-                  <tr>
-                    <th>Actual area</th>
-                    <td>{area.toFixed(2)} sq ft</td>
+                  <tr data-testid="price-area">
+                    <th>Area sq ft / sq m</th>
+                    <td>{priceArea.toFixed(2)} sq ft · {sqmFromSqFt(priceArea).toFixed(2)} sq m</td>
                   </tr>
                   <tr data-testid="package-line">
                     <th>Amount</th>
@@ -632,9 +635,13 @@ function ProductPage({
                   )}
                   {shower.hardwareBreakdown &&
                     hardwarePriceLines(shower).map((row) => (
-                      <tr key={row.id} data-testid="hardware-price-line">
-                        <th>{row.name}</th>
-                        <td>{inr(row.rate)} · {inr(row.amount)}</td>
+                      <tr key={row.id} className="hardware-price" data-testid="hardware-price-line">
+                        <td colSpan={2} className="hardware-price-cell">
+                          <div className="hardware-price-row">
+                            <span className="hp-name">{row.name}</span>
+                            {row.amount > 0 ? <span className="hp-amt">{inr(row.amount)}</span> : null}
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   <tr>
@@ -702,16 +709,14 @@ function ClosePage({
       <p className="terms">{company.bank || "—"}</p>
       <div className="sign-row" data-testid="sign-row">
         <div className="sign-col">
-          <p>
-            For <CompanyMark company={company} />
-          </p>
+          <p className="sign-for">For {companyTitle(company)}</p>
           <span className="sign-line" />
-          <p>Authorised signatory</p>
+          <p className="sign-role">Authorised signatory</p>
         </div>
         <div className="sign-col">
-          <p>For M/s {oneLine(customer.name) || "—"}</p>
+          <p className="sign-for">For M/s {oneLine(customer.name) || "—"}</p>
           <span className="sign-line" />
-          <p>Accepted</p>
+          <p className="sign-role">Accepted</p>
         </div>
       </div>
     </div>
