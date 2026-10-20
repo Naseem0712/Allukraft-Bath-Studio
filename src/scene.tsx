@@ -1,8 +1,7 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { drawingCss } from "./drawStyle";
+import { drawingCss, drawStyle } from "./drawStyle";
 import {
   COLOUR_HEX,
-  PULL_FINISHES,
   balanceWidth,
   ceilingFinish,
   ceilingModuleMm,
@@ -47,7 +46,7 @@ import {
 export type FigureMode = "studio" | "elevations" | "elevation" | "plan";
 
 type EditApi = {
-  startHandle: (event: ReactPointerEvent, item: PlacedItem, part: "body" | "label") => void;
+  startHandle: (event: ReactPointerEvent, item: PlacedItem, part: "body" | "label" | "lock") => void;
   startLabel: (event: ReactPointerEvent, key: string, axis?: "x" | "y") => void;
   nudge: Record<string, { x: number; y: number }>;
   editable: boolean;
@@ -61,7 +60,7 @@ type DragState =
   | { kind: "side"; id: string; axis: "x" | "y"; origin: number; length: number; screenPerMm: number }
   | { kind: "side-x"; id: string; originX: number; attachX: number; screenPerMm: number }
   | { kind: "fixture"; fixture: "wc" | "shower"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
-  | { kind: "handle"; id: string; part: "body" | "label"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
+  | { kind: "handle"; id: string; part: "body" | "label" | "lock"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
   | { kind: "user-dim"; id: string; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
   | { kind: "label"; key: string; axis: "x" | "y" | "both"; originX: number; originY: number; x: number; y: number; screenPerMm: number }
   | { kind: "dim-new"; view: string; ax: number; ay: number; bx: number; by: number; originX: number; originY: number; offset: number; nx: number; ny: number; screenPerMm: number }
@@ -90,7 +89,7 @@ interface FigureProps {
   onAddDim?: (dim: UserDim) => void;
   onMoveDim?: (id: string, offset: number) => void;
   onNudgeLabel?: (key: string, x: number, y: number) => void;
-  onNudgeHandle?: (id: string, part: "body" | "label", x: number, y: number) => void;
+  onNudgeHandle?: (id: string, part: "body" | "label" | "lock", x: number, y: number) => void;
   onMoveView?: (key: string, x: number, y: number) => void;
   fitWidth?: number;
   fitHeight?: number;
@@ -319,8 +318,10 @@ export default function ShowerFigure({
         return;
       }
       if (active.kind === "handle") {
-        const x = Math.round(active.x + (event.clientX - active.originX) / active.screenPerMm);
-        const y = Math.round(active.y + (event.clientY - active.originY) / active.screenPerMm);
+        const dx = (event.clientX - active.originX) / active.screenPerMm;
+        const dy = (event.clientY - active.originY) / active.screenPerMm;
+        const x = Math.round(active.x + dx);
+        const y = active.part === "lock" ? Math.max(0, Math.round(active.y - dy)) : Math.round(active.y + dy);
         onNudgeHandleRef.current?.(active.id, active.part, x, y);
         return;
       }
@@ -451,7 +452,7 @@ export default function ShowerFigure({
     drag.current = { kind: "view", key, originX: event.clientX, originY: event.clientY, x: prev.x, y: prev.y, perPx };
   }
 
-  function startHandle(event: ReactPointerEvent, item: PlacedItem, part: "body" | "label") {
+  function startHandle(event: ReactPointerEvent, item: PlacedItem, part: "body" | "label" | "lock") {
     if (!onNudgeHandle) return;
     event.stopPropagation();
     event.preventDefault();
@@ -461,8 +462,8 @@ export default function ShowerFigure({
       part,
       originX: event.clientX,
       originY: event.clientY,
-      x: part === "body" ? item.handleDx : item.handleLabelDx,
-      y: part === "body" ? item.handleDy : item.handleLabelDy,
+      x: part === "lock" ? item.lockDx : part === "body" ? item.handleDx : item.handleLabelDx,
+      y: part === "lock" ? item.lockHeight : part === "body" ? item.handleDy : item.handleLabelDy,
       screenPerMm: pixelsPerMm(),
     };
   }
@@ -1007,6 +1008,7 @@ function Elevation({
             gaps={[...hingeGaps(shower, X, Y, scale), ...overlapHideGaps(shower, item, X, Y, scale, faceMm)]}
             captions={captions}
             labelDy={labelDy.get(item.id) ?? 0}
+            labelScope={dimScope ?? ""}
             onDrag={undefined}
             onEdge={onEdge}
           />
@@ -1378,6 +1380,7 @@ function ItemView({
   gaps,
   captions = true,
   labelDy = 0,
+  labelScope = "",
   onDrag,
   onEdge,
 }: {
@@ -1399,6 +1402,7 @@ function ItemView({
   gaps: ScreenGap[];
   captions?: boolean;
   labelDy?: number;
+  labelScope?: string;
   onDrag?: (event: ReactPointerEvent, item: PlacedItem) => void;
   onEdge?: (event: ReactPointerEvent, item: PlacedItem, edge: "left" | "right") => void;
 }) {
@@ -1449,6 +1453,7 @@ function ItemView({
         gaps={gaps}
         captions={captions}
         labelDy={labelDy}
+        labelScope={labelScope}
         onDrag={onDrag}
         onEdge={edge}
       />
@@ -1546,6 +1551,7 @@ function DoorView({
   gaps,
   captions = true,
   labelDy = 0,
+  labelScope = "",
   onDrag,
   onEdge,
 }: {
@@ -1566,6 +1572,7 @@ function DoorView({
   gaps: ScreenGap[];
   captions?: boolean;
   labelDy?: number;
+  labelScope?: string;
   onDrag?: (event: ReactPointerEvent, item: PlacedItem) => void;
   onEdge?: (event: ReactPointerEvent, edge: "left" | "right") => void;
 }) {
@@ -1573,6 +1580,7 @@ function DoorView({
   const y = Y(geom.leafY);
   const w = Math.max(geom.leafW * scale, 2);
   const h = Math.max(geom.leafH * scale, 2);
+  const chokhat = Math.max(2.4, Math.min(face * 0.48, 8 * scale));
   const openingX = X(geom.x);
   const openingY = Y(geom.y);
   const openingW = Math.max(geom.w * scale, 2);
@@ -1597,8 +1605,15 @@ function DoorView({
       onPointerDown={layer === "fill" && onDrag ? (event) => onDrag(event, item) : undefined}
     >
       {layer === "line" && item.doorStyle === "openable" && item.outerFrame && framed && (
-        <g data-testid="outer-frame" pointerEvents="none">
-          <MiterFrame x={openingX} y={openingY} w={openingW} h={openingH} t={face} faceMm={faceMm} gaps={gaps} />
+        <g data-testid="outer-frame" data-gap="0" data-slim={Math.round(chokhat)} pointerEvents="none">
+          <path
+            data-testid="outer-frame-face"
+            d={frameRing(x - chokhat, y - chokhat, w + chokhat * 2, h + chokhat * 2, chokhat)}
+            fill="#f3efe6"
+            stroke="none"
+            fillRule="evenodd"
+          />
+          <MiterFrame x={x - chokhat} y={y - chokhat} w={w + chokhat * 2} h={h + chokhat * 2} t={chokhat} faceMm={faceMm} gaps={gaps} />
         </g>
       )}
       <PanelFace
@@ -1620,7 +1635,18 @@ function DoorView({
         Y={Y}
         gaps={gaps}
       />
-      {layer === "line" && <Channels x={x} y={y} w={w} h={h} channels={item.channels} inset={framed && shower.product !== "cubicle" ? face : 3} />}
+      {layer === "line" && (
+        <Channels
+          x={x}
+          y={y}
+          w={w}
+          h={h}
+          channels={item.channels}
+          inset={framed && shower.product !== "cubicle" ? face : 3}
+          floorGap={Math.max(0, openingY + openingH - (y + h))}
+          besideFrame={item.doorStyle === "openable" && item.outerFrame && framed}
+        />
+      )}
       {layer === "line" && item.doorStyle === "sliding" && (
         <g pointerEvents="none">
           {framed ? (
@@ -1635,7 +1661,7 @@ function DoorView({
           <SlideArrow x={openingX} y={openingY} w={openingW} h={openingH} towards={slideTowards} />
         </g>
       )}
-      {layer === "line" && <DoorHardware item={item} shower={shower} Y={Y} openingX={openingX} openingW={openingW} openingY={openingY} scale={scale} unit={unit} hardware={hardware} />}
+      {layer === "line" && <DoorHardware item={item} shower={shower} Y={Y} openingX={openingX} openingW={openingW} openingY={openingY} scale={scale} unit={unit} labelScope={labelScope} />}
       {layer === "line" && selected && <Selection x={openingX} y={openingY} w={openingW} h={openingH} />}
       {layer === "line" && captions && (
         <SizeMark
@@ -2676,6 +2702,87 @@ function MiterFrame({
   );
 }
 
+function frameRing(x: number, y: number, w: number, h: number, t: number): string {
+  const inner = Math.max(0, Math.min(t, w / 2 - 0.2, h / 2 - 0.2));
+  return `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z M ${x + inner} ${y + inner} V ${y + h - inner} H ${x + w - inner} V ${y + inner} Z`;
+}
+
+/** Outer edge, inner edge, and a 45° diagonal, the same joint as the door profile. */
+function miterMembers(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  t: number,
+  edge: { top: boolean; bottom: boolean; left: boolean; right: boolean },
+  skipBottomRail = false,
+): [number, number, number, number][] {
+  const span = Math.max(0, Math.min(t, w / 2 - 0.2, h / 2 - 0.2));
+  if (span < 0.6 || w < 2 || h < 2) return [];
+  const oL = x;
+  const oT = y;
+  const oR = x + w;
+  const oB = y + h;
+  const iL = x + span;
+  const iT = y + span;
+  const iR = x + w - span;
+  const iB = y + h - span;
+  const lines: [number, number, number, number][] = [];
+  const add = (x1: number, y1: number, x2: number, y2: number) => lines.push([x1, y1, x2, y2]);
+  if (edge.top) {
+    add(oL, oT, oR, oT);
+    add(edge.left ? iL : oL, iT, edge.right ? iR : oR, iT);
+    if (!edge.left) add(oL, oT, oL, iT);
+    if (!edge.right) add(oR, oT, oR, iT);
+  }
+  if (edge.bottom && !skipBottomRail) {
+    add(oL, oB, oR, oB);
+    add(edge.left ? iL : oL, iB, edge.right ? iR : oR, iB);
+    if (!edge.left) add(oL, oB, oL, iB);
+    if (!edge.right) add(oR, oB, oR, iB);
+  }
+  if (edge.left) {
+    add(oL, edge.top ? oT : oT, oL, edge.bottom ? oB : oB);
+    add(iL, edge.top ? iT : oT, iL, edge.bottom ? iB : oB);
+    if (!edge.top) add(oL, oT, iL, oT);
+    if (!edge.bottom && !skipBottomRail) add(oL, oB, iL, oB);
+  }
+  if (edge.right) {
+    add(oR, oT, oR, oB);
+    add(iR, edge.top ? iT : oT, iR, edge.bottom ? iB : oB);
+    if (!edge.top) add(oR, oT, iR, oT);
+    if (!edge.bottom && !skipBottomRail) add(oR, oB, iR, oB);
+  }
+  if (edge.top && edge.left) add(oL, oT, iL, iT);
+  if (edge.top && edge.right) add(oR, oT, iR, iT);
+  if (edge.bottom && edge.left) add(oL, oB, iL, iB);
+  if (edge.bottom && edge.right) add(oR, oB, iR, iB);
+  return lines;
+}
+
+function isSealChannel(type: string): boolean {
+  return /seal|gasket/i.test(type);
+}
+
+function BrushSeal({ x, y, w, h }: { x: number; y: number; w: number; h: number }) {
+  if (w < 2 || h < 1) return null;
+  const ticks = [];
+  const step = Math.max(2.2, Math.min(3.2, w / 36));
+  for (let i = step; i < w - 1; i += step) {
+    const sway = ((Math.round(i * 5) % 4) - 1) * 0.45;
+    const len = h * (0.58 + ((Math.round(i * 3) % 5) / 14));
+    ticks.push(
+      <line key={i} x1={x + i} y1={y + 0.3} x2={x + i + sway} y2={y + Math.min(h, len)} stroke="#4e473f" strokeWidth={drawStyle.dimStroke} />,
+    );
+  }
+  return (
+    <g data-testid="door-brush">
+      <rect x={x} y={y} width={w} height={Math.max(1, h * 0.32)} fill="#6d645c" opacity="0.45" />
+      {ticks}
+    </g>
+  );
+}
+
 function Channels({
   x,
   y,
@@ -2683,6 +2790,8 @@ function Channels({
   h,
   channels,
   inset,
+  floorGap = 0,
+  besideFrame = false,
 }: {
   x: number;
   y: number;
@@ -2690,16 +2799,49 @@ function Channels({
   h: number;
   channels: PlacedItem["channels"];
   inset: number;
+  floorGap?: number;
+  besideFrame?: boolean;
 }) {
-  const active = channels.top || channels.bottom || channels.left || channels.right;
-  if (!active || w < 8 || h < 8) return null;
-  const pad = Math.min(inset + 1.5, w / 3, h / 3);
+  const parts = channels.parts?.length
+    ? channels.parts
+    : [{ type: channels.type, top: channels.top, bottom: channels.bottom, left: channels.left, right: channels.right }];
+  const active = parts.filter((part) => part.top || part.bottom || part.left || part.right);
+  if (!active.length || w < 8 || h < 8) return null;
+  const slim = Math.max(1.25, Math.min(2.05, inset > 0 ? inset * 0.14 : 1.6));
+  let channelStep = 0;
+  let sealStep = 0;
   return (
-    <g data-testid="channels" data-channel={channels.type} stroke="#111111" strokeWidth="0.6" fill="none" pointerEvents="none">
-      {channels.top && <line x1={x + pad} y1={y + pad} x2={x + w - pad} y2={y + pad} />}
-      {channels.bottom && <line x1={x + pad} y1={y + h - pad} x2={x + w - pad} y2={y + h - pad} />}
-      {channels.left && <line x1={x + pad} y1={y + pad} x2={x + pad} y2={y + h - pad} />}
-      {channels.right && <line x1={x + w - pad} y1={y + pad} x2={x + w - pad} y2={y + h - pad} />}
+    <g data-testid="channels" data-miter="45" data-join="45" fill="none" stroke={drawStyle.ink} strokeWidth={drawStyle.sectionStroke} pointerEvents="none">
+      {active.map((part) => {
+        const edge = { top: part.top, bottom: part.bottom, left: part.left, right: part.right };
+        const seal = isSealChannel(part.type);
+        if (seal) {
+          const step = sealStep;
+          sealStep += 1;
+          const out = slim + step * (slim + 0.35);
+          const lines = miterMembers(x - out, y - out, w + out * 2, h + out * 2, slim, edge, edge.bottom);
+          const brushH = besideFrame ? slim : floorGap > 1.5 ? Math.max(slim, Math.min(floorGap, slim + 6)) : slim;
+          return (
+            <g key={part.type} data-testid="door-seal" data-channel={part.type} data-miter="45">
+              {lines.map((segment, index) => (
+                <line key={index} data-miter="45" x1={segment[0]} y1={segment[1]} x2={segment[2]} y2={segment[3]} />
+              ))}
+              {edge.bottom && <BrushSeal x={x} y={y + h + step * 0.8} w={w} h={brushH} />}
+            </g>
+          );
+        }
+        const step = channelStep;
+        channelStep += 1;
+        const pad = Math.min(Math.max(0, inset) + step * (slim + 0.45), w / 3, h / 3);
+        const lines = miterMembers(x + pad, y + pad, Math.max(2, w - pad * 2), Math.max(2, h - pad * 2), slim, edge);
+        return (
+          <g key={part.type} data-channel={part.type} data-miter="45">
+            {lines.map((segment, index) => (
+              <line key={index} data-miter="45" x1={segment[0]} y1={segment[1]} x2={segment[2]} y2={segment[3]} />
+            ))}
+          </g>
+        );
+      })}
     </g>
   );
 }
@@ -2945,6 +3087,10 @@ function SizeMark({ x, y, label, testId, dy = 0 }: { x: number; y: number; label
   );
 }
 
+function labelKey(scope: string, name: string, id: string): string {
+  return scope ? `${scope}-${name}-${id}` : `${name}-${id}`;
+}
+
 function DoorHardware({
   item,
   shower,
@@ -2954,7 +3100,7 @@ function DoorHardware({
   openingW,
   scale,
   unit,
-  hardware,
+  labelScope,
 }: {
   item: PlacedItem;
   shower: Shower;
@@ -2964,7 +3110,7 @@ function DoorHardware({
   openingW: number;
   scale: number;
   unit: UnitId;
-  hardware: string;
+  labelScope: string;
 }) {
   const edit = useContext(EditCtx);
   const inset = 12;
@@ -2973,33 +3119,64 @@ function DoorHardware({
   const floor = Y(shower.height);
   const bodyX = hx + item.handleDx * scale;
   const bodyY = mount + item.handleDy * scale;
+  const lockX = hx + item.lockDx * scale;
+  const lockY = Y(shower.height - item.lockHeight);
   const sideSign = item.handleSide === "left" ? -1 : 1;
+  const into = -sideSign;
   const bar = Math.max(6, 32 * scale);
-  const labelX = bodyX + sideSign * (bar / 2 + 28) + item.handleLabelDx * scale;
-  const labelY = bodyY + item.handleLabelDy * scale;
-  const finish = PULL_FINISHES.find((row) => row.name === item.pullFinish) ?? PULL_FINISHES[6];
+  const horizontalPull = item.handleKind === "pull" && item.pullAxis === "horizontal";
+  const halfReach =
+    item.handleKind === "pull"
+      ? horizontalPull
+        ? bar / 2
+        : Math.max(14, item.pullLength * scale) / 2
+      : item.handleKind === "lpipe"
+        ? Math.max(12, item.pipeVertLen * scale) / 2
+        : 8;
+  const nameNudge = edit?.nudge[labelKey(labelScope, "handle-name", item.id)] ?? { x: 0, y: 0 };
+  const labelX = bodyX + into * (bar / 2 + 28) + (item.handleLabelDx + nameNudge.x) * scale;
+  const labelY = (horizontalPull ? bodyY - bar / 2 - 18 : bodyY) + (item.handleLabelDy + nameNudge.y) * scale;
   const lengthMm = item.handleKind === "lpipe" ? Math.max(item.pipeVertLen, item.pipeHorizLen) : item.pullLength;
   const marked = item.handleKind !== "none" || item.lockStyle !== "none";
   const canDrag = Boolean(edit?.editable);
-  const verticalLabel = !(item.handleKind === "pull" && item.pullAxis === "horizontal");
+  const heightKey = labelKey(labelScope, "handle-height", item.id);
+  const heightNudge = edit?.nudge[heightKey] ?? { x: 0, y: 0 };
+  const nameKey = labelKey(labelScope, "handle-name", item.id);
+  const leaderX = bodyX + into * (bar / 2 + 14);
+  const leaderEnd = Math.min(floor - 28, bodyY + halfReach + 8);
   return (
-    <g data-testid="handle" data-side={item.handleSide} data-kind={item.handleKind} data-dx={item.handleDx} data-dy={item.handleDy} data-label-dx={item.handleLabelDx} data-label-dy={item.handleLabelDy}>
-      {marked && (
-        <>
-          <line x1={bodyX} y1={floor} x2={bodyX} y2={bodyY} stroke="#111111" strokeWidth="0.6" strokeDasharray="2 2" pointerEvents="none" />
-          <text data-testid="handle-height" x={bodyX + sideSign * 36} y={floor - 14} textAnchor={item.handleSide === "left" ? "end" : "start"} className="panel-size" pointerEvents="none">
+    <g data-testid="handle" data-side={item.handleSide} data-kind={item.handleKind} data-dx={item.handleDx} data-dy={item.handleDy} data-lock-dx={item.lockDx} data-lock-height={item.lockHeight} data-label-dx={item.handleLabelDx} data-label-dy={item.handleLabelDy}>
+      {marked && item.handleKind !== "none" && (
+        <g
+          data-testid="handle-height-label"
+          transform={`translate(${heightNudge.x * scale} ${heightNudge.y * scale})`}
+          pointerEvents={canDrag ? "all" : "none"}
+          style={{ cursor: canDrag ? "move" : undefined }}
+          onPointerDown={canDrag ? (event) => edit?.startLabel(event, heightKey) : undefined}
+        >
+          {leaderEnd < floor - 30 && (
+            <line x1={leaderX} y1={floor - 18} x2={leaderX} y2={leaderEnd} stroke={drawStyle.ink} strokeWidth={drawStyle.dimStroke} strokeDasharray="2 2" pointerEvents="none" />
+          )}
+          <text data-testid="handle-height" x={leaderX + into * 8} y={floor - 14} textAnchor={into > 0 ? "start" : "end"} className="panel-size" pointerEvents="none">
             {formatLength(item.handleHeight, unit)} fl
           </text>
-        </>
+        </g>
       )}
-      <g data-testid="handle-body" onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "body") : undefined} style={{ cursor: canDrag ? "move" : undefined }}>
-        {item.handleKind === "lpipe" && <RoundPipeL x={bodyX} y={bodyY} scale={scale} item={item} />}
-        {item.handleKind === "pull" && <PullBar x={bodyX} y={bodyY} scale={scale} item={item} finish={finish.hex} />}
-        {item.lockStyle === "lever" && (
-          <LeverLock x={bodyX + sideSign * 16} y={bodyY} colour={hardware} side={item.handleSide} />
-        )}
-      </g>
-      {item.handlePhoto && (
+      {item.handleKind !== "none" && (
+        <g data-testid="handle-body" onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "body") : undefined} style={{ cursor: canDrag ? "move" : undefined }}>
+          {item.handleKind === "lpipe" && <RoundPipeL x={bodyX} y={bodyY} scale={scale} item={item} labelKey={labelKey(labelScope, "pipe-size", item.id)} />}
+          {item.handleKind === "pull" && <PullBar x={bodyX} y={bodyY} scale={scale} item={item} />}
+        </g>
+      )}
+      {item.lockStyle === "lever" && (
+        <g data-testid="lock-body" data-dx={item.lockDx} data-height={item.lockHeight} onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "lock") : undefined} style={{ cursor: canDrag ? "move" : undefined }}>
+          <LeverLock x={lockX} y={lockY} side={item.handleSide} />
+        </g>
+      )}
+      {item.lockStyle === "lever" && (
+        <LockName x={lockX} y={lockY} side={item.handleSide} name={item.lockName.trim() || "Lever lock"} labelKey={labelKey(labelScope, "lock-name", item.id)} />
+      )}
+      {item.handleKind !== "none" && item.handlePhoto && (
         <image
           href={item.handlePhoto}
           x={item.handleSide === "left" ? bodyX + 8 : bodyX - 56}
@@ -3014,12 +3191,12 @@ function DoorHardware({
         <text
           data-testid="handle-direction"
           data-axis={item.handleKind === "pull" ? item.pullAxis : "lpipe"}
-          x={verticalLabel ? 0 : labelX}
-          y={verticalLabel ? 0 : labelY - bar / 2 - 12}
-          textAnchor="middle"
+          x={labelX}
+          y={labelY}
+          textAnchor={into > 0 ? "start" : "end"}
           className="panel-size"
-          transform={verticalLabel ? `translate(${labelX} ${labelY}) rotate(-90)` : undefined}
-          onPointerDown={canDrag ? (event) => edit?.startHandle(event, item, "label") : undefined}
+          pointerEvents={canDrag ? "all" : "none"}
+          onPointerDown={canDrag ? (event) => edit?.startLabel(event, nameKey) : undefined}
           style={{ cursor: canDrag ? "move" : undefined }}
         >
           {item.handleKind === "pull"
@@ -3031,23 +3208,44 @@ function DoorHardware({
   );
 }
 
-function RoundPipeL({ x, y, scale, item }: { x: number; y: number; scale: number; item: PlacedItem }) {
+function tubeOutline(x1: number, y1: number, x2: number, y2: number, dia: number): string {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * (dia / 2);
+  const ny = (dx / len) * (dia / 2);
+  return `M ${x1 + nx} ${y1 + ny} L ${x2 + nx} ${y2 + ny} L ${x2 - nx} ${y2 - ny} L ${x1 - nx} ${y1 - ny} Z`;
+}
+
+function RoundPipeL({ x, y, scale, item, labelKey: key }: { x: number; y: number; scale: number; item: PlacedItem; labelKey: string }) {
+  const edit = useContext(EditCtx);
   const vLen = Math.max(12, item.pipeVertLen * scale);
   const hLen = Math.max(16, item.pipeHorizLen * scale);
-  const vW = Math.max(8, item.pipeVertDia * scale);
-  const hW = Math.max(7, item.pipeTubeDia * scale);
+  const vW = Math.max(5, item.pipeVertDia * scale);
+  const hW = Math.max(4, item.pipeTubeDia * scale);
   const dir = item.legPoint === "left" ? -1 : 1;
   const y1 = y - vLen;
   const x2 = x + dir * hLen;
+  const nudge = edit?.nudge[key] ?? { x: 0, y: 0 };
+  const canDrag = Boolean(edit?.editable);
+  const ink = drawStyle.ink;
+  const stroke = drawStyle.sectionStroke;
   return (
-    <g data-testid="handle-lpipe" data-vert={item.pipeVertLen} data-horiz={item.pipeHorizLen} data-tube={item.pipeTubeDia} data-return={item.pipeReturn} data-leg={item.legPoint} stroke="#111111" fill="none">
-      <line x1={x} y1={y} x2={x} y2={y1} strokeWidth={vW} strokeLinecap="round" />
-      <line x1={x} y1={y} x2={x} y2={y1} stroke="#ffffff" strokeWidth={Math.max(1, vW * 0.28)} strokeLinecap="round" />
-      <line x1={x} y1={y1} x2={x2} y2={y1} stroke="#111111" strokeWidth={hW} strokeLinecap="round" />
-      <line x1={x} y1={y1} x2={x2} y2={y1} stroke="#ffffff" strokeWidth={Math.max(1, hW * 0.28)} strokeLinecap="round" />
-      <circle cx={x} cy={y} r={vW / 2} fill="#d9dde0" stroke="#111111" strokeWidth="0.8" />
-      <circle cx={x2} cy={y1} r={hW / 2} fill="#d9dde0" stroke="#111111" strokeWidth="0.8" />
-      <text x={(x + x2) / 2} y={y1 - hW - 14} textAnchor="middle" className="panel-size">
+    <g data-testid="handle-lpipe" data-vert={item.pipeVertLen} data-horiz={item.pipeHorizLen} data-tube={item.pipeTubeDia} data-return={item.pipeReturn} data-leg={item.legPoint} stroke={ink} fill="transparent" strokeWidth={stroke}>
+      <path d={tubeOutline(x, y, x, y1, vW)} />
+      <path d={tubeOutline(x, y1, x2, y1, hW)} />
+      <circle cx={x} cy={y} r={vW / 2} />
+      <circle cx={x2} cy={y1} r={hW / 2} />
+      <text
+        data-testid="pipe-size"
+        x={(x + x2) / 2 + nudge.x * scale}
+        y={y1 - hW / 2 - 16 + nudge.y * scale}
+        textAnchor="middle"
+        className="panel-size"
+        pointerEvents={canDrag ? "all" : "none"}
+        style={{ cursor: canDrag ? "move" : undefined }}
+        onPointerDown={canDrag ? (event) => edit?.startLabel(event, key) : undefined}
+      >
         {formatMm(item.pipeHorizLen)} · {formatMm(item.pipeReturn)}
       </text>
     </g>
@@ -3059,42 +3257,64 @@ function PullBar({
   y,
   scale,
   item,
-  finish,
 }: {
   x: number;
   y: number;
   scale: number;
   item: PlacedItem;
-  finish: string;
 }) {
   const length = Math.max(14, item.pullLength * scale);
-  const thick = Math.max(6, 32 * scale);
+  const thick = Math.max(5, 18 * scale);
   const horizontal = item.pullAxis === "horizontal";
   const w = horizontal ? length : thick;
   const h = horizontal ? thick : length;
   const left = x - w / 2;
   const top = y - h / 2;
-  const inset = Math.max(1.5, Math.min(w, h) * 0.22);
+  const inset = Math.max(1.4, Math.min(w, h) * 0.28);
   return (
-    <g data-testid="handle-pull" data-axis={item.pullAxis} data-length={item.pullLength} data-finish={item.pullFinish}>
-      <rect x={left} y={top} width={w} height={h} fill={finish} stroke="#111111" strokeWidth="1.2" />
-      <rect x={left + inset} y={top + inset} width={Math.max(0, w - inset * 2)} height={Math.max(0, h - inset * 2)} fill="#ffffff" stroke="#111111" strokeWidth="0.7" />
+    <g data-testid="handle-pull" data-axis={item.pullAxis} data-length={item.pullLength} data-finish={item.pullFinish} fill="transparent" stroke={drawStyle.ink} strokeWidth={drawStyle.sectionStroke}>
+      <rect x={left} y={top} width={w} height={h} />
+      <rect x={left + inset} y={top + inset} width={Math.max(0, w - inset * 2)} height={Math.max(0, h - inset * 2)} fill="none" />
     </g>
   );
 }
 
-function LeverLock({ x, y, colour, side }: { x: number; y: number; colour: string; side: Side }) {
+function LeverLock({ x, y, side }: { x: number; y: number; side: Side }) {
   const dir = side === "left" ? 1 : -1;
-  const lever = 46;
+  const lever = 40;
   const leverX = dir > 0 ? x : x - lever;
+  const stroke = drawStyle.sectionStroke;
+  const ink = drawStyle.ink;
   return (
-    <g data-testid="lock-lever" data-side={side}>
-      <rect x={x - 7} y={y - 8} width="14" height="18" fill="#1a1a1a" stroke="#111111" />
-      <rect x={leverX} y={y - 3} width={lever} height="7" fill={colour} stroke="#111111" strokeWidth="0.8" />
-      <rect x={leverX + lever - 12} y={y - 5} width="12" height="11" fill="#f4f4f4" stroke="#111111" />
-      <rect x={x + 4} y={y - 16} width="8" height="8" rx="1" fill="#111111" />
-      <text x={x} y={y + 18} textAnchor="middle" className="panel-size">
-        Lever lock
+    <g data-testid="lock-lever" data-side={side} fill="transparent" stroke={ink} strokeWidth={stroke}>
+      <rect x={x - 6} y={y - 8} width="12" height="16" rx="1.5" />
+      <rect x={leverX} y={y - 2.5} width={lever} height="5" />
+      <rect x={dir > 0 ? leverX + lever - 8 : leverX} y={y - 4} width="8" height="8" />
+      <rect x={x - 3} y={y - 15} width="6" height="6" fill="none" />
+    </g>
+  );
+}
+
+function LockName({ x, y, side, name, labelKey: key }: { x: number; y: number; side: Side; name: string; labelKey: string }) {
+  const edit = useContext(EditCtx);
+  const dir = side === "left" ? 1 : -1;
+  const lever = 40;
+  const nudge = edit?.nudge[key] ?? { x: 0, y: 0 };
+  const s = edit?.scale || 1;
+  const canDrag = Boolean(edit?.editable);
+  const baseX = dir > 0 ? x + lever + 18 : x - lever - 18;
+  const baseY = y - 26;
+  return (
+    <g
+      data-testid="lock-name"
+      transform={`translate(${nudge.x * s} ${nudge.y * s})`}
+      pointerEvents={canDrag ? "all" : "none"}
+      style={{ cursor: canDrag ? "move" : undefined }}
+      onPointerDown={canDrag ? (event) => edit?.startLabel(event, key) : undefined}
+    >
+      <rect x={dir > 0 ? baseX - 2 : baseX - 86} y={baseY - 14} width="90" height="18" fill="transparent" stroke="none" />
+      <text x={baseX} y={baseY} textAnchor={dir > 0 ? "start" : "end"} className="panel-size" pointerEvents="none">
+        {name}
       </text>
     </g>
   );

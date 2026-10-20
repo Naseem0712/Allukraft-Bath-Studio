@@ -29,6 +29,7 @@ import {
   BRAND_LOGO,
   balanceWidth,
   cloneShower,
+  defaultLockHeight,
   describeHardware,
   designedSqFt,
   clamp,
@@ -61,6 +62,7 @@ import {
   saveCustomer,
   saveQuoteNo,
   saveSetups,
+  setChannelEdge,
   setWastage,
   showerAmount,
   sizeLabel,
@@ -764,6 +766,7 @@ export default function App() {
               {selected.kind !== "wall" && (
                 <ChannelFields channels={selected.channels} testPrefix="channel" onChange={(channels) => patchSelected({ channels })} />
               )}
+              <ExtraHardwareFields shower={draft} onChange={setDraft} />
               <button type="button" className="danger" onClick={() => { setDraft((current) => removeItem(current, selected.id)); setSelectedId(null); }}>
                 Remove item
               </button>
@@ -1504,7 +1507,13 @@ export default function App() {
           onMoveDim={(id, offset) => setDraft((current) => ({ ...current, dims: current.dims.map((dim) => (dim.id === id ? { ...dim, offset } : dim)) }))}
           onNudgeLabel={(key, x, y) => setDraft((current) => ({ ...current, labelNudge: { ...current.labelNudge, [key]: { x, y } } }))}
           onNudgeHandle={(id, part, x, y) =>
-            setDraft((current) => patchItem(current, id, part === "body" ? { handleDx: x, handleDy: y } : { handleLabelDx: x, handleLabelDy: y }))
+            setDraft((current) =>
+              patchItem(
+                current,
+                id,
+                part === "lock" ? { lockDx: x, lockHeight: y } : part === "body" ? { handleDx: x, handleDy: y } : { handleLabelDx: x, handleLabelDy: y },
+              ),
+            )
           }
           onMoveView={(key, x, y) => setDraft((current) => ({ ...current, viewShift: { ...current.viewShift, [key]: { x, y } } }))}
           onUndo={undoDraft}
@@ -1680,10 +1689,37 @@ function HandleEditor({
 }) {
   return (
     <div className="spec-box" data-testid="handle-editor">
-      <h3 className="subhead">Handle</h3>
+      <div className="handle-row">
+        <h3 className="subhead">Handle</h3>
+        {item.handleKind !== "none" && (
+          <button
+            type="button"
+            data-testid="remove-handle"
+            onClick={() => onChange({ handleKind: "none", handleName: "", handleRate: 0, handlePhoto: "" })}
+          >
+            Remove handle
+          </button>
+        )}
+      </div>
       <label className="stack">
         Handle
-        <select data-testid="handle-kind" value={item.handleKind} onChange={(event) => onChange({ handleKind: event.target.value as HandleKind })}>
+        <select
+          data-testid="handle-kind"
+          value={item.handleKind}
+          onChange={(event) => {
+            const handleKind = event.target.value as HandleKind;
+            if (handleKind === "none") {
+              onChange({ handleKind: "none", handleName: "", handleRate: 0, handlePhoto: "" });
+              return;
+            }
+            const reach = handleKind === "pull" ? item.pullLength / 2 + 80 : handleKind === "lpipe" ? item.pipeVertLen + 80 : 0;
+            const blocked = item.lockStyle === "lever" && Math.abs(item.lockHeight - item.handleHeight) <= reach;
+            onChange({
+              handleKind,
+              ...(blocked ? { lockHeight: defaultLockHeight({ ...item, handleKind, lockStyle: "lever" }) } : {}),
+            });
+          }}
+        >
           <option value="none">None</option>
           <option value="lpipe">L-type round pipe</option>
           <option value="pull">Rectangular pull</option>
@@ -1722,6 +1758,7 @@ function HandleEditor({
           </label>
           {item.handlePhoto && <img className="handle-thumb" data-testid="handle-photo-preview" src={item.handlePhoto} alt="" />}
           <LengthField label="Height from floor" testId="handle-height" mm={item.handleHeight} unit={unit} onChange={(mm) => onChange({ handleHeight: mm })} />
+          <p className="hint">Drag the handle on the drawing. The lock keeps its own place.</p>
           {item.handleKind === "lpipe" && (
             <>
               <p className="hint">Pipe L. Ø30 × 250, bar 405, tube Ø25, return 184.</p>
@@ -1780,10 +1817,37 @@ function HandleEditor({
           )}
         </>
       )}
-      <h3 className="subhead">Lock</h3>
+      <div className="handle-row">
+        <h3 className="subhead">Lock</h3>
+        {item.lockStyle !== "none" && (
+          <button
+            type="button"
+            data-testid="remove-lock"
+            onClick={() => onChange({ lockStyle: "none", lockName: "", lockRate: 0 })}
+          >
+            Remove lock
+          </button>
+        )}
+      </div>
       <label className="stack">
         Lock
-        <select data-testid="lock-style" value={item.lockStyle} onChange={(event) => onChange({ lockStyle: event.target.value as LockStyle })}>
+        <select
+          data-testid="lock-style"
+          value={item.lockStyle}
+          onChange={(event) => {
+            const lockStyle = event.target.value as LockStyle;
+            if (lockStyle === "none") {
+              onChange({ lockStyle: "none", lockName: "", lockRate: 0 });
+              return;
+            }
+            const reach = item.handleKind === "pull" ? item.pullLength / 2 + 80 : item.handleKind === "lpipe" ? item.pipeVertLen + 80 : 0;
+            const blocked = item.handleKind !== "none" && Math.abs(item.lockHeight - item.handleHeight) <= reach;
+            onChange({
+              lockStyle,
+              ...(blocked ? { lockHeight: defaultLockHeight({ ...item, lockStyle }) } : {}),
+            });
+          }}
+        >
           <option value="none">None</option>
           <option value="lever">Lever lock handle</option>
         </select>
@@ -1804,6 +1868,12 @@ function HandleEditor({
             onRate={(next) => onChange({ lockRate: money(next) })}
             onAmount={(next) => onChange({ lockRate: money(next) })}
           />
+          <LengthField label="Lock height from floor" testId="lock-height" mm={item.lockHeight} unit={unit} onChange={(mm) => onChange({ lockHeight: mm })} />
+          <label className="stack">
+            Lock across from the stile (mm)
+            <NumberField testId="lock-across" value={item.lockDx} min={-4000} onChange={(lockDx) => onChange({ lockDx: Math.round(lockDx) })} />
+          </label>
+          <p className="hint">Drag the lock on the drawing to move it on its own. It does not follow the handle.</p>
         </>
       )}
     </div>
@@ -2206,6 +2276,97 @@ function ColourField({
   );
 }
 
+function ExtraHardwareFields({ shower, onChange }: { shower: Shower; onChange: (next: Shower) => void }) {
+  return (
+    <div className="channels" data-testid="extra-hardware">
+      <h3 className="subhead">Extra hardware</h3>
+      <label className="check">
+        <input
+          data-testid="show-wastage"
+          type="checkbox"
+          checked={shower.showWastage !== false}
+          onChange={(event) => onChange({ ...shower, showWastage: event.target.checked })}
+        />
+        Show wastage on the quote
+      </label>
+      <label className="check">
+        <input
+          data-testid="hardware-breakdown"
+          type="checkbox"
+          checked={shower.hardwareBreakdown}
+          onChange={(event) => onChange({ ...shower, hardwareBreakdown: event.target.checked })}
+        />
+        List each hardware rate in the price column
+      </label>
+      <p className="hint">Add a row only if you want one. A rate prints and adds to the total. A blank rate prints the name only.</p>
+      {shower.extraHardware.map((row) => (
+        <div key={row.id} className="field-row" data-testid="extra-hardware-row">
+          <label className="stack">
+            Name
+            <input
+              data-testid="extra-hardware-name"
+              value={row.name}
+              placeholder="Closer, seal, ..."
+              onChange={(event) =>
+                onChange({
+                  ...shower,
+                  extraHardware: shower.extraHardware.map((item) => (item.id === row.id ? { ...item, name: event.target.value.slice(0, 80) } : item)),
+                })
+              }
+            />
+          </label>
+          <label className="stack">
+            Rate
+            <input
+              data-testid="extra-hardware-rate"
+              inputMode="decimal"
+              value={row.rate ? String(row.rate) : ""}
+              placeholder="Optional"
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                if (raw !== "" && !Number.isFinite(Number(raw))) return;
+                const rate = raw === "" ? 0 : money(Math.max(0, Number(raw)));
+                onChange({
+                  ...shower,
+                  extraHardware: shower.extraHardware.map((item) => (item.id === row.id ? { ...item, rate } : item)),
+                });
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            data-testid="remove-hardware-row"
+            onClick={() => onChange({ ...shower, extraHardware: shower.extraHardware.filter((item) => item.id !== row.id) })}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        data-testid="add-hardware-row"
+        onClick={() => onChange({ ...shower, extraHardware: [...shower.extraHardware, { id: uid("hw"), name: "", rate: 0 }] })}
+      >
+        Add row
+      </button>
+    </div>
+  );
+}
+
+const CHANNEL_LABELS: Record<string, string> = {
+  "U-channel": "U-channel",
+  "Bottom seal": "Door seal",
+  "Side gasket": "EPDM",
+  "Head channel": "Head seal",
+};
+
+function channelSlug(type: string): string {
+  if (type === "U-channel") return "u";
+  if (type === "Bottom seal") return "door-seal";
+  if (type === "Side gasket") return "epdm";
+  return "head";
+}
+
 function ChannelFields({
   channels,
   onChange,
@@ -2215,24 +2376,31 @@ function ChannelFields({
   onChange: (channels: ChannelSet) => void;
   testPrefix: string;
 }) {
+  const parts = channels.parts?.length ? channels.parts : CHANNEL_TYPES.map((type) => ({ type, top: type === channels.type && channels.top, bottom: type === channels.type && channels.bottom, left: type === channels.type && channels.left, right: type === channels.type && channels.right }));
   return (
     <div className="channels">
-      <label className="stack">
-        Channel
-        <select data-testid={`${testPrefix}-type`} value={channels.type} onChange={(event) => onChange({ ...channels, type: event.target.value })}>
-          {CHANNEL_TYPES.map((type) => (
-            <option key={type} value={type}>{type}</option>
-          ))}
-        </select>
-      </label>
-      <div className="edge-checks">
-        {CHANNEL_EDGES.map((edge) => (
-          <label key={edge} className="check">
-            <input data-testid={`${testPrefix}-${edge}`} type="checkbox" checked={channels[edge]} onChange={(event) => onChange({ ...channels, [edge]: event.target.checked })} />
-            {edge}
-          </label>
-        ))}
-      </div>
+      {CHANNEL_TYPES.map((type) => {
+        const part = parts.find((row) => row.type === type) ?? { type, top: false, bottom: false, left: false, right: false };
+        const slug = channelSlug(type);
+        return (
+          <div key={type} data-testid={`${testPrefix}-${slug}`}>
+            <p className="subhead">{CHANNEL_LABELS[type] ?? type}</p>
+            <div className="edge-checks">
+              {CHANNEL_EDGES.map((edge) => (
+                <label key={edge} className="check">
+                  <input
+                    data-testid={type === "U-channel" ? `${testPrefix}-${edge}` : `${testPrefix}-${slug}-${edge}`}
+                    type="checkbox"
+                    checked={part[edge]}
+                    onChange={(event) => onChange(setChannelEdge(channels, type, edge, event.target.checked))}
+                  />
+                  {edge}
+                </label>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

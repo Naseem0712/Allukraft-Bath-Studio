@@ -119,12 +119,22 @@ export const PART_LABELS: { key: PartKey; label: string }[] = [
   { key: "ceiling", label: "Ceiling rate" },
 ];
 
+export interface ChannelPart {
+  type: string;
+  top: boolean;
+  bottom: boolean;
+  left: boolean;
+  right: boolean;
+}
+
 export interface ChannelSet {
   type: string;
   top: boolean;
   bottom: boolean;
   left: boolean;
   right: boolean;
+  /** Each component keeps its own edges. Applying one does not clear the others. */
+  parts: ChannelPart[];
 }
 
 export interface PlacedItem {
@@ -174,6 +184,10 @@ export interface PlacedItem {
   lockStyle: LockStyle;
   lockName: string;
   lockRate: number;
+  /** Millimetres from the stile. Independent of the handle. Positive moves right. */
+  lockDx: number;
+  /** Millimetres from the floor. Independent of the handle height. */
+  lockHeight: number;
   hingeCount: number;
   hingeName: string;
   wheelName: string;
@@ -376,6 +390,13 @@ export interface CubicleSpec {
 
 export const CUBICLE_RAIL_MM = 18;
 
+/** A hardware line the user added, besides hinge, wheel, handle, and lock. */
+export interface ExtraHardware {
+  id: string;
+  name: string;
+  rate: number;
+}
+
 export interface Shower {
   product: ProductKind;
   cubicle: CubicleSpec;
@@ -396,6 +417,11 @@ export interface Shower {
   showerPoint: PlanFixture;
   location: string;
   notes: string;
+  /** Price column lists each hardware rate. Off leaves the column unchanged. */
+  hardwareBreakdown: boolean;
+  /** Print wastage area and wastage amount. On unless the user unticks it. */
+  showWastage: boolean;
+  extraHardware: ExtraHardware[];
   extraWork: ExtraWorkSpec;
   material: Material;
   rates: PartRates;
@@ -475,7 +501,37 @@ export function uid(prefix = "i"): string {
 }
 
 export function emptyChannels(): ChannelSet {
-  return { type: "U-channel", top: false, bottom: false, left: false, right: false };
+  return normalizeChannels({ type: "U-channel", top: false, bottom: false, left: false, right: false });
+}
+
+export function normalizeChannels(raw?: Partial<ChannelSet> | null): ChannelSet {
+  const type = typeof raw?.type === "string" && raw.type ? raw.type : "U-channel";
+  const legacy = {
+    top: Boolean(raw?.top),
+    bottom: Boolean(raw?.bottom),
+    left: Boolean(raw?.left),
+    right: Boolean(raw?.right),
+  };
+  const incoming = Array.isArray(raw?.parts) ? raw.parts : null;
+  const parts = CHANNEL_TYPES.map((name) => {
+    const found = incoming?.find((part) => part && part.type === name);
+    if (found) {
+      return { type: name, top: Boolean(found.top), bottom: Boolean(found.bottom), left: Boolean(found.left), right: Boolean(found.right) };
+    }
+    if (!incoming && name === type) return { type: name, ...legacy };
+    return { type: name, top: false, bottom: false, left: false, right: false };
+  });
+  const active = parts.find((part) => part.top || part.bottom || part.left || part.right);
+  const head = active ?? parts.find((part) => part.type === type) ?? parts[0];
+  return { type: head.type, top: head.top, bottom: head.bottom, left: head.left, right: head.right, parts };
+}
+
+export function setChannelEdge(channels: ChannelSet, type: string, edge: ChannelEdge, on: boolean): ChannelSet {
+  const base = normalizeChannels(channels);
+  return normalizeChannels({
+    ...base,
+    parts: base.parts.map((part) => (part.type === type ? { ...part, [edge]: on } : part)),
+  });
 }
 
 export function emptyInfill(): InfillSpec {
@@ -577,6 +633,21 @@ function num(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Where a new lock sits so it does not share the handle. */
+export function defaultLockHeight(item: {
+  handleHeight?: number;
+  handleKind?: string;
+  lockStyle?: string;
+  pullLength?: number;
+  pipeVertLen?: number;
+}): number {
+  const base = Math.max(0, Number(item.handleHeight) || 0);
+  const withHandle = item.lockStyle === "lever" && (item.handleKind === "pull" || item.handleKind === "lpipe");
+  if (!withHandle) return Math.round(base);
+  const reach = item.handleKind === "pull" ? Math.max(20, Number(item.pullLength) || 450) / 2 : Math.max(20, Number(item.pipeVertLen) || 250);
+  return Math.round(base + reach + 120);
+}
+
 function normalizeItem(item: Partial<PlacedItem> | PlacedItem): PlacedItem {
   return {
     id: item.id || uid("i"),
@@ -597,7 +668,7 @@ function normalizeItem(item: Partial<PlacedItem> | PlacedItem): PlacedItem {
     cutFee: Boolean(item.cutFee),
     cutFeeAmount: Math.max(0, num(item.cutFeeAmount, 0)),
     depth: Math.max(0, num(item.depth, 0)),
-    channels: { ...emptyChannels(), ...item.channels },
+    channels: normalizeChannels(item.channels),
     slideSeat: item.slideSeat === "inside" ? "inside" : "outside",
     handleKind: item.handleKind === "lpipe" || item.handleKind === "pull" ? item.handleKind : "none",
     handleName: item.handleName ?? "",
@@ -624,6 +695,8 @@ function normalizeItem(item: Partial<PlacedItem> | PlacedItem): PlacedItem {
     lockStyle: item.lockStyle === "lever" ? "lever" : "none",
     lockName: item.lockName ?? "",
     lockRate: Math.max(0, num(item.lockRate, 0)),
+    lockDx: num(item.lockDx, 0),
+    lockHeight: item.lockHeight == null ? defaultLockHeight(item) : Math.max(0, num(item.lockHeight, defaultLockHeight(item))),
     hingeCount: Math.max(2, Math.round(num(item.hingeCount, num(item.height, 2100) > 1700 ? 3 : 2))),
     hingeName: item.hingeName?.trim() ? item.hingeName : "Hinge",
     wheelName: item.wheelName ?? "",
@@ -756,11 +829,14 @@ export function normalizeShower(input?: Partial<Shower> | null): Shower {
       alignId: top?.alignId ?? "",
       x: num(top?.x, 0),
       width: Math.max(0, num(top?.width, 0)),
-      channels: { ...emptyChannels(), ...top?.channels },
+      channels: normalizeChannels(top?.channels),
       auto: Boolean(top?.auto),
     }),
     location: (raw.location ?? "").slice(0, 80),
     notes: (raw.notes ?? "").slice(0, NOTE_LIMIT),
+    hardwareBreakdown: raw.hardwareBreakdown === true,
+    showWastage: raw.showWastage !== false,
+    extraHardware: normalizeExtraHardware(raw.extraHardware),
     extraWork: normalizeExtra(raw.extraWork),
     material,
     rates: {
@@ -980,7 +1056,7 @@ function normalizeCeiling(ceiling: Partial<Ceiling> | undefined): Ceiling {
       h: Math.max(40, num(ceiling?.trap?.h, 450)),
     },
     image: ceiling?.image ?? "",
-    channels: { ...emptyChannels(), ...ceiling?.channels },
+    channels: normalizeChannels(ceiling?.channels),
     materialName: ceiling?.materialName ?? "",
     colour: ceiling?.colour ?? "",
     cols: clamp(Math.round(num(ceiling?.cols, 2)), 1, 12),
@@ -1012,6 +1088,18 @@ function normalizeNudges(raw: unknown): Record<string, { x: number; y: number }>
     out[key] = { x: num(value.x, 0), y: num(value.y, 0) };
   }
   return out;
+}
+
+function normalizeExtraHardware(raw: unknown): ExtraHardware[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 40).map((row) => {
+    const item = row && typeof row === "object" ? (row as Partial<ExtraHardware>) : {};
+    return {
+      id: item.id || uid("hw"),
+      name: String(item.name ?? "").slice(0, 80),
+      rate: money(Math.max(0, num(item.rate, 0))),
+    };
+  });
 }
 
 function normalizeWastage(raw: unknown): Record<string, WastageSpec> {
@@ -1489,7 +1577,7 @@ export function elevationShower(shower: Shower, side: SideRun): Shower {
     ...shower,
     width: Math.max(10, side.length),
     height: shower.height,
-    items: partitionItems(shower, side).map((item) => ({ ...item, channels: { ...item.channels } })),
+    items: partitionItems(shower, side).map((item) => ({ ...item, channels: normalizeChannels(item.channels) })),
     sides: [],
     useDepth: false,
     topFixed: { ...shower.topFixed, enabled: false },
@@ -1645,7 +1733,7 @@ export function designedSqFt(shower: Shower): number {
 
 export interface PackageLine {
   id: string;
-  kind: "package" | "handle" | "lock" | "wastage" | "size" | "extra" | "cut" | "legs" | "rail" | "ceiling";
+  kind: "package" | "handle" | "lock" | "wastage" | "size" | "extra" | "cut" | "legs" | "rail" | "ceiling" | "hardware";
   description: string;
   size: string;
   area: number;
@@ -1681,11 +1769,11 @@ export function lockOptionName(item: PlacedItem): string {
 }
 
 function doorHasHandle(item: PlacedItem): boolean {
-  return item.kind === "door" && (item.handleKind !== "none" || item.handleName.trim() !== "" || item.handleRate > 0);
+  return item.kind === "door" && item.handleKind !== "none";
 }
 
 function doorHasLock(item: PlacedItem): boolean {
-  return item.kind === "door" && (item.lockStyle !== "none" || item.lockName.trim() !== "" || item.lockRate > 0);
+  return item.kind === "door" && item.lockStyle !== "none";
 }
 
 export function sqmFromSqFt(sqFt: number): number {
@@ -1994,6 +2082,20 @@ export function packageQuoteLines(shower: Shower, unit: UnitId): PackageLine[] {
       });
     }
   }
+  for (const extra of current.extraHardware) {
+    const rate = money(extra.rate);
+    if (rate <= 0) continue;
+    lines.push({
+      id: `hardware:${extra.id}`,
+      kind: "hardware",
+      description: extra.name.trim() || "Hardware",
+      size: "—",
+      area: 0,
+      rate,
+      amount: rate,
+      photo: "",
+    });
+  }
   for (const row of eachItem(current)) {
     const item = row.item;
     if (item.kind !== "wall" || item.wallCut === "overlap" || !item.cutFee || item.cutFeeAmount <= 0) continue;
@@ -2152,6 +2254,13 @@ export function showerAmount(shower: Shower): number {
   return packageQuoteLines(shower, "mm").reduce((sum, line) => sum + line.amount, 0);
 }
 
+/** Hardware that has a rate, for the optional price-column breakdown. */
+export function hardwarePriceLines(shower: Shower): { id: string; name: string; rate: number; amount: number }[] {
+  return packageQuoteLines(shower, "mm")
+    .filter((line) => (line.kind === "handle" || line.kind === "lock" || line.kind === "hardware") && line.rate > 0)
+    .map((line) => ({ id: line.id, name: line.description, rate: line.rate, amount: line.amount }));
+}
+
 export function splitMarks(text: string): { bold: boolean; text: string }[] {
   const parts: { bold: boolean; text: string }[] = [];
   const re = /\*\*([^*]+)\*\*|\*([^*]+)\*/g;
@@ -2189,11 +2298,13 @@ export function describeHardware(shower: Shower): string {
     .map((row) => {
       const door = row.item;
       const place = row.runId === "front" ? "" : `${row.runName}: `;
-      const handle = doorHasHandle(door) ? handleOptionName(door) : "handle";
-      const lock = doorHasLock(door) ? `, ${lockOptionName(door)}` : "";
+      const handle = doorHasHandle(door) ? `${handleOptionName(door)} ${door.handleSide}` : "";
+      const lock = doorHasLock(door) ? lockOptionName(door) : "";
+      const fitted = [handle, lock].filter(Boolean).join(", ");
+      const fittedText = fitted ? `, ${fitted}` : "";
       return door.doorStyle === "sliding"
-        ? `${place}Sliding track ${formatMm(door.trackSize)} mm, cover ${formatMm(door.topCover)} mm, wheel ${door.wheelName || "wheel"}, soft-closing ${door.softClose ? "yes" : "no"}, ${handle} ${door.handleSide}${lock}`
-        : `${place}Openable ${door.hingeName} × ${door.hingeCount}, ${handle} ${door.handleSide}, opens ${door.swing === "outside" ? "outside" : "inside"}${lock}${door.outerFrame ? ", outer frame" : ""}`;
+        ? `${place}Sliding track ${formatMm(door.trackSize)} mm, cover ${formatMm(door.topCover)} mm, wheel ${door.wheelName || "wheel"}, soft-closing ${door.softClose ? "yes" : "no"}${fittedText}`
+        : `${place}Openable ${door.hingeName} × ${door.hingeCount}${fittedText}, opens ${door.swing === "outside" ? "outside" : "inside"}${door.outerFrame ? ", outer frame" : ""}`;
     })
     .join("; ");
 }
@@ -2216,7 +2327,7 @@ export function sizeLabel(shower: Shower, unit: UnitId): string {
 }
 
 export function inr(value: number): string {
-  const amount = Math.round(Number.isFinite(value) ? value : 0);
+  const amount = money(Number.isFinite(value) ? value : 0);
   const body = new Intl.NumberFormat("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -2275,6 +2386,8 @@ function baseItem(kind: ItemKind, x: number, width: number, height: number, dept
     lockStyle: "none",
     lockName: "",
     lockRate: 0,
+    lockDx: 0,
+    lockHeight: 1000,
     hingeCount: height > 1700 ? 3 : 2,
     hingeName: "Hinge",
     wheelName: "",
@@ -2391,7 +2504,7 @@ export function patchItem(shower: Shower, id: string, patch: Partial<PlacedItem>
     const next = normalizeItem({
       ...item,
       ...patch,
-      channels: patch.channels ? { ...patch.channels } : item.channels,
+      channels: patch.channels ? normalizeChannels(patch.channels) : item.channels,
     });
     const max = Math.max(0, limit - Math.min(next.width, limit));
     next.x = Math.round(clamp(next.x, 0, max));
@@ -2513,7 +2626,7 @@ function starterFront(shower: Shower, id: string): PlacedItem[] {
     door.doorStyle = "openable";
     return [wall, baseItem("fixed", 0, wallW, h, depth), baseItem("fixed", wallW, mid, h, depth), door];
   }
-  return shower.items.map((item) => ({ ...item, channels: { ...item.channels } }));
+  return shower.items.map((item) => ({ ...item, channels: normalizeChannels(item.channels) }));
 }
 
 export function starterItems(shower: Shower, id: string): PlacedItem[] {
@@ -2567,7 +2680,7 @@ export function loadSetups(): SavedSetup[] {
     return parsed.filter(isSetup).map((setup) => ({
       ...setup,
       material: normalizeMaterial(setup.material),
-      channels: { ...emptyChannels(), ...setup.channels },
+      channels: normalizeChannels(setup.channels),
     }));
   } catch {
     return [];

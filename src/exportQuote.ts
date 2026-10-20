@@ -1,5 +1,5 @@
 import type { CustomerDetails, CompanyProfile, QuoteEntry, UnitId } from "./model";
-import { GST_RATE, companyTitle, hardwareColourLabel, packageQuoteLines, profileLabel, quoteSubtotal, sizeLabel, splitMarks, todayLabel } from "./model";
+import { GST_RATE, companyTitle, hardwareColourLabel, money, packageQuoteLines, profileLabel, quoteSubtotal, sizeLabel, splitMarks, todayLabel } from "./model";
 
 export interface PrintInclude {
   elevation: boolean;
@@ -46,17 +46,79 @@ async function rasterCap(src: string, maxPx: number, alpha = 1): Promise<string 
   return canvas.toDataURL("image/png");
 }
 
-function ownText(el: Element): string {
-  return [...el.childNodes]
-    .filter((node) => node.nodeType === Node.TEXT_NODE)
-    .map((node) => (node.textContent || "").replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join(" ");
-}
-
-/** Helvetica has no rupee. The raw sign becomes a superscript 1 in the PDF. */
+/** Helvetica has no rupee. Every other character, including bullets and symbols, stays as typed. */
 function pdfSafeText(text: string): string {
   return text.replace(/\u20B9/g, "Rs. ");
+}
+
+function fitsWinAnsi(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code > 255) return false;
+    if (code >= 0x7f && code < 0xa0) return false;
+  }
+  return true;
+}
+
+type LineSlice = { text: string; left: number; top: number; right: number; bottom: number };
+
+/** One visual line of a text node, taken from the laid-out boxes so bold stays inline. */
+function lineSlices(node: Text): LineSlice[] {
+  const full = node.data;
+  const lines: LineSlice[] = [];
+  let current: LineSlice | null = null;
+  for (let i = 0; i < full.length; ) {
+    const code = full.codePointAt(i) ?? 0;
+    const next = i + (code > 0xffff ? 2 : 1);
+    const range = document.createRange();
+    range.setStart(node, i);
+    range.setEnd(node, next);
+    const rect = range.getClientRects()[0];
+    const ch = full.slice(i, next);
+    i = next;
+    if (ch === "\n") {
+      if (current) lines.push(current);
+      current = null;
+      continue;
+    }
+    if (!rect) {
+      if (current && ch.trim() !== "") current.text += ch;
+      continue;
+    }
+    if (rect.width < 0.05) {
+      if (ch.trim() === "") continue;
+      if (current) current.text += ch;
+      else current = { text: ch, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      continue;
+    }
+    if (!current || Math.abs(rect.top - current.top) > 1.5) {
+      if (current) lines.push(current);
+      current = { text: ch, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    } else {
+      current.text += ch;
+      current.left = Math.min(current.left, rect.left);
+      current.right = Math.max(current.right, rect.right);
+      current.top = Math.min(current.top, rect.top);
+      current.bottom = Math.max(current.bottom, rect.bottom);
+    }
+  }
+  if (current) lines.push(current);
+  return lines.filter((line) => line.text.trim().length > 0);
+}
+
+function rasterLine(text: string, fontPx: number, bold: boolean, widthPx: number, heightPx: number): string | null {
+  const scale = 3;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil((widthPx + 4) * scale));
+  canvas.height = Math.max(1, Math.ceil((heightPx + 2) * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+  ctx.font = `${bold ? 700 : 400} ${fontPx}px "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI", sans-serif`;
+  ctx.fillStyle = "#111111";
+  ctx.textBaseline = "top";
+  ctx.fillText(text, 0, 1);
+  return canvas.toDataURL("image/png");
 }
 
 /** Copy paint onto the clone in user units so the PDF lines match the quote page. */
@@ -159,17 +221,31 @@ export async function exportPdf(pages: HTMLElement[], filename: string): Promise
 
       for (const el of page.querySelectorAll("h1, h2, h3, p, th, td, figcaption, li, span, strong, em, a")) {
         if (el.closest("svg") || el.closest(".a4-watermark")) continue;
-        const text = ownText(el);
-        if (!text) continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 1 || rect.height < 1) continue;
-        const bold = el.matches("h1, h2, h3, th, strong");
+        if (!(el instanceof HTMLElement)) continue;
+        const nodes = [...el.childNodes].filter((node): node is Text => node.nodeType === Node.TEXT_NODE);
+        if (!nodes.some((node) => node.data.trim())) continue;
+        const bold = el.matches("h1, h2, h3, th, strong") || Number.parseInt(getComputedStyle(el).fontWeight, 10) >= 600;
         const size = el.matches("h1") ? 13 : el.matches("h2, h3") ? 11 : 8;
+        const fontPx = parseFloat(getComputedStyle(el).fontSize) || 12;
         pdf.setFont("helvetica", bold ? "bold" : "normal");
         pdf.setFontSize(size);
         pdf.setTextColor(17, 17, 17);
-        const lines = pdf.splitTextToSize(pdfSafeText(text), Math.max(8, wOf(rect.width)));
-        pdf.text(lines, xOf(rect.left), yOf(rect.top) + size * 0.32);
+        for (const node of nodes) {
+          for (const line of lineSlices(node)) {
+            const shown = pdfSafeText(line.text);
+            const x = xOf(line.left);
+            const y = yOf(line.top) + size * 0.32;
+            if (fitsWinAnsi(shown)) {
+              pdf.text(shown, x, y);
+              continue;
+            }
+            const widthPx = Math.max(4, line.right - line.left);
+            const heightPx = Math.max(fontPx, line.bottom - line.top);
+            const image = rasterLine(shown, fontPx, bold, widthPx, heightPx);
+            if (!image) continue;
+            pdf.addImage(image, "PNG", xOf(line.left), yOf(line.top), wOf(widthPx + 4), wOf(heightPx + 2));
+          }
+        }
       }
     }
   } finally {
@@ -333,8 +409,8 @@ export async function exportExcel(options: {
             : line.kind === "lock" && !options.include.lockName
               ? "Lock"
               : line.description;
-        const cells: (string | number)[] = [name, line.size, line.kind === "handle" || line.kind === "lock" ? "—" : Number(line.area.toFixed(2))];
-        if (options.include.amounts) cells.push(line.rate, Math.round(line.amount));
+        const cells: (string | number)[] = [name, line.size, line.kind === "handle" || line.kind === "lock" || line.kind === "hardware" ? "—" : Number(line.area.toFixed(2))];
+        if (options.include.amounts) cells.push(money(line.rate), money(line.amount));
         cells.forEach((value, index) => {
           sheet.getCell(row, index + 1).value = value;
         });
@@ -343,7 +419,7 @@ export async function exportExcel(options: {
       if (options.include.amounts) {
         const total = lines.reduce((sum, line) => sum + line.amount, 0);
         sheet.getCell(row, 1).value = "Shower total";
-        sheet.getCell(row, 5).value = Math.round(total);
+        sheet.getCell(row, 5).value = money(total);
         sheet.getCell(row, 1).font = { bold: true };
         sheet.getCell(row, 5).font = { bold: true };
         row += 1;
@@ -363,14 +439,14 @@ export async function exportExcel(options: {
     const subtotal = quoteSubtotal(options.rows);
     const gst = subtotal * GST_RATE;
     sheet.getCell(row, 1).value = "Subtotal";
-    sheet.getCell(row, 5).value = Math.round(subtotal);
+    sheet.getCell(row, 5).value = money(subtotal);
     sheet.getCell(row, 1).font = { bold: true };
     row += 1;
     sheet.getCell(row, 1).value = "GST 18%";
-    sheet.getCell(row, 5).value = Math.round(gst);
+    sheet.getCell(row, 5).value = money(gst);
     row += 1;
     sheet.getCell(row, 1).value = "Grand total";
-    sheet.getCell(row, 5).value = Math.round(subtotal + gst);
+    sheet.getCell(row, 5).value = money(subtotal + gst);
     sheet.getCell(row, 1).font = { bold: true };
     sheet.getCell(row, 5).font = { bold: true };
     row += 2;

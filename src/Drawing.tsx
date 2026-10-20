@@ -20,7 +20,7 @@ interface DrawingProps {
   onAddDim?: (dim: UserDim) => void;
   onMoveDim?: (id: string, offset: number) => void;
   onNudgeLabel?: (key: string, x: number, y: number) => void;
-  onNudgeHandle?: (id: string, part: "body" | "label", x: number, y: number) => void;
+  onNudgeHandle?: (id: string, part: "body" | "label" | "lock", x: number, y: number) => void;
   onMoveView?: (key: string, x: number, y: number) => void;
   onUndo?: () => void;
   onRedo?: () => void;

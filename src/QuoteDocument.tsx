@@ -15,6 +15,7 @@ import {
   handleOptionName,
   handleSizeText,
   hardwareColourLabel,
+  hardwarePriceLines,
   inr,
   productGlassAmount,
   productRate,
@@ -582,10 +583,12 @@ function ProductPage({
                 <th>Area</th>
                 <td>{area.toFixed(2)} sq ft · {sqmFromSqFt(area).toFixed(2)} sq m</td>
               </tr>
-              <tr>
-                <th>Wastage</th>
-                <td>{waste.toFixed(2)} sq ft · {sqmFromSqFt(waste).toFixed(2)} sq m</td>
-              </tr>
+              {shower.showWastage !== false && (
+                <tr>
+                  <th>Wastage</th>
+                  <td>{waste.toFixed(2)} sq ft · {sqmFromSqFt(waste).toFixed(2)} sq m</td>
+                </tr>
+              )}
               {shower.extraWork.kind !== "none" && (
                 <tr data-testid="extra-work-line">
                   <th>Extra work</th>
@@ -594,7 +597,7 @@ function ProductPage({
               )}
               <tr>
                 <th>Notes</th>
-                <td><Rich text={shower.notes.trim() || "—"} /></td>
+                <td className="notes-cell"><Rich text={shower.notes.trim() || "—"} /></td>
               </tr>
             </tbody>
           </table>
@@ -620,10 +623,19 @@ function ProductPage({
                     <th>Amount</th>
                     <td>{inr(productGlassAmount(shower))}</td>
                   </tr>
-                  <tr data-testid="wastage-line">
-                    <th>Wastage</th>
-                    <td>{inr(wastageAmountOf(shower))}</td>
-                  </tr>
+                  {shower.showWastage !== false && (
+                    <tr data-testid="wastage-line">
+                      <th>Wastage</th>
+                      <td>{inr(wastageAmountOf(shower))}</td>
+                    </tr>
+                  )}
+                  {shower.hardwareBreakdown &&
+                    hardwarePriceLines(shower).map((row) => (
+                      <tr key={row.id} data-testid="hardware-price-line">
+                        <th>{row.name}</th>
+                        <td>{inr(row.rate)} · {inr(row.amount)}</td>
+                      </tr>
+                    ))}
                   <tr>
                     <th>Product total</th>
                     <td>{inr(showerAmount(shower))}</td>
@@ -712,9 +724,8 @@ function formatDoor(item: PlacedItem, unit: UnitId): string {
 
 function hardwareRows(shower: Shower, unit: UnitId, include: PrintInclude): string {
   const doors = eachItem(shower).filter((row) => row.item.kind === "door");
-  if (!doors.length) return "—";
   const colour = hardwareColourLabel(shower.material);
-  return doors
+  const doorText = doors
     .map((row) => {
       const item = row.item;
       const place = row.runId === "front" ? "" : `${row.runName}: `;
@@ -722,19 +733,24 @@ function hardwareRows(shower: Shower, unit: UnitId, include: PrintInclude): stri
         const handle = item.handleKind !== "none" && include.handleName ? `, ${handleOptionName(item)}` : "";
         return `${place}${item.hingeName} × ${item.hingeCount}, ${colour}${handle}`;
       }
-      const handle = include.handleName ? handleOptionName(item) : "Handle";
-      return `${place}Wheel ${item.wheelName.trim() || "wheel"}, soft-closing ${item.softClose ? "yes" : "no"}, ${handle}, ${handleSizeText(item, unit)}, ${colour}`;
+      const handle =
+        item.handleKind !== "none"
+          ? `, ${include.handleName ? handleOptionName(item) : "Handle"}, ${handleSizeText(item, unit)}`
+          : "";
+      return `${place}Wheel ${item.wheelName.trim() || "wheel"}, soft-closing ${item.softClose ? "yes" : "no"}${handle}, ${colour}`;
     })
     .join("; ");
+  const extraText = shower.extraHardware.map((row) => row.name.trim()).filter(Boolean).join("; ");
+  return [doorText, extraText].filter(Boolean).join("; ") || "—";
 }
 
 function Rich({ text }: { text: string }) {
   return (
-    <>
+    <span className="rich-text">
       {splitMarks(text).map((part, index) =>
         part.bold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>,
       )}
-    </>
+    </span>
   );
 }
 

@@ -504,6 +504,7 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   position: relative;
   overflow: hidden;
   color: #1c2b33;
+  font-family: "Segoe UI", "Segoe UI Symbol", "Segoe UI Emoji", sans-serif;
 }
 .a4-head, .a4-foot, .a4-body, .sign-row { position: relative; z-index: 1; }
 .a4-head { display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #111; padding-bottom: 4px; }
@@ -596,7 +597,7 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .spec-table th { width: 22%; font-weight: 700; color: #1c2b33; }
 .amount-table th { width: auto; font-weight: 700; color: #1c2b33; }
 .product-page .spec-table { table-layout: fixed; }
-.product-page .amount-table { table-layout: auto; }
+.product-page .amount-table { table-layout: auto; width: 100%; }
 .product-page .bill { margin-top: 0; }
 .product-page .bill th,
 .product-page .bill td {
@@ -619,6 +620,24 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   white-space: nowrap;
   overflow-wrap: normal;
   word-break: normal;
+}
+.product-page .amount-table th {
+  width: 100%;
+  max-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.product-page .amount-table td {
+  width: 1%;
+  white-space: nowrap;
+}
+.spec-split > .amount-stack { overflow: visible; }
+.product-page .spec-table td.notes-cell,
+.product-page .spec-table td.notes-cell .rich-text,
+.product-page .spec-table td.notes-cell .rich-text span,
+.product-page .spec-table td.notes-cell .rich-text strong {
+  white-space: pre-wrap;
+  font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI", sans-serif;
 }
 .product-page .amount-table td {
   text-align: right;
@@ -738,6 +757,20 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .totals-table tr.grand th, .totals-table tr.grand td { font-weight: 800; font-size: 14px; }
 .doc-total { font-weight: 750; }
 .terms { white-space: pre-wrap; font-size: 12px; }
+.rich-text,
+.rich-text strong,
+.rich-text span {
+  position: static;
+  display: inline;
+  float: none;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  margin: 0;
+  transform: none;
+  white-space: inherit;
+}
 .sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18mm; margin-top: 16mm; align-items: end; }
 .sign-col p { margin: 0; line-height: 1.3; }
 .sign-line { display: block; height: 14mm; margin: 0 0 2mm; border-bottom: 1px solid #111; width: 92%; }
@@ -874,6 +907,13 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   .a4-page, .a4-watermark, .a4-foot a {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+  .rich-text,
+  .rich-text strong,
+  .rich-text span {
+    position: static !important;
+    display: inline !important;
+    float: none !important;
   }
 }
 
