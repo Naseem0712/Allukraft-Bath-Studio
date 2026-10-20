@@ -1,5 +1,5 @@
 import type { CustomerDetails, CompanyProfile, QuoteEntry, UnitId } from "./model";
-import { GST_RATE, companyTitle, hardwareColourLabel, money, packageQuoteLines, profileLabel, quoteSubtotal, sizeLabel, splitMarks, todayLabel } from "./model";
+import { GST_RATE, companyTitle, hardwareColourLabel, money, packageQuoteLines, profileLabel, quoteSubtotal, sizeLabel, splitEmojiRuns, splitMarks, todayLabel } from "./model";
 
 export interface PrintInclude {
   elevation: boolean;
@@ -106,6 +106,42 @@ function lineSlices(node: Text): LineSlice[] {
   return lines.filter((line) => line.text.trim().length > 0);
 }
 
+function paintFont(emoji: boolean, fontPx: number, bold: boolean): string {
+  const family = emoji
+    ? '"Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", sans-serif'
+    : '"Segoe UI", "Helvetica Neue", sans-serif';
+  return `${bold ? 700 : 400} ${fontPx}px ${family}`;
+}
+
+/** Draw Latin at the requested size. Emoji use their own font at that same size. */
+function paintLine(text: string, fontPx: number, bold: boolean): { url: string; width: number; height: number } | null {
+  const runs = splitEmojiRuns(text);
+  const probe = document.createElement("canvas").getContext("2d");
+  if (!probe) return null;
+  let width = 0;
+  for (const run of runs) {
+    probe.font = paintFont(run.emoji, fontPx, bold && !run.emoji);
+    width += probe.measureText(run.text).width;
+  }
+  const height = Math.max(1, fontPx * 1.15);
+  const scale = 3;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil((width + 1) * scale));
+  canvas.height = Math.max(1, Math.ceil((height + 1) * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "#111111";
+  ctx.textBaseline = "top";
+  let x = 0;
+  for (const run of runs) {
+    ctx.font = paintFont(run.emoji, fontPx, bold && !run.emoji);
+    ctx.fillText(run.text, x, 0);
+    x += ctx.measureText(run.text).width;
+  }
+  return { url: canvas.toDataURL("image/png"), width: Math.max(1, width), height };
+}
+
 function rasterLine(text: string, fontPx: number, bold: boolean, widthPx: number, heightPx: number): string | null {
   const scale = 3;
   const canvas = document.createElement("canvas");
@@ -114,10 +150,14 @@ function rasterLine(text: string, fontPx: number, bold: boolean, widthPx: number
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.scale(scale, scale);
-  ctx.font = `${bold ? 700 : 400} ${fontPx}px "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI", sans-serif`;
   ctx.fillStyle = "#111111";
   ctx.textBaseline = "top";
-  ctx.fillText(text, 0, 1);
+  let x = 0;
+  for (const run of splitEmojiRuns(text)) {
+    ctx.font = paintFont(run.emoji, fontPx, bold && !run.emoji);
+    ctx.fillText(run.text, x, 1);
+    x += ctx.measureText(run.text).width;
+  }
   return canvas.toDataURL("image/png");
 }
 
@@ -162,6 +202,68 @@ async function shrinkSvgImages(svg: SVGSVGElement) {
     if (!small) continue;
     image.setAttribute("href", small);
     image.removeAttribute("xlink:href");
+  }
+}
+
+type PdfWriter = {
+  setFont: (name: string, style: string) => void;
+  setFontSize: (size: number) => void;
+  setTextColor: (red: number, green: number, blue: number) => void;
+  getTextWidth: (text: string) => number;
+  text: (text: string, x: number, y: number) => void;
+  addImage: (data: string, format: string, x: number, y: number, width: number, height: number) => void;
+};
+
+/** Place each bold and plain run on the line it already wraps to, with only the typed spaces between them. */
+function drawRichText(
+  pdf: PdfWriter,
+  el: HTMLElement,
+  xOf: (left: number) => number,
+  yOf: (top: number) => number,
+  wOf: (width: number) => number,
+) {
+  const inCell = Boolean(el.closest("td, th"));
+  const cssPx = parseFloat(getComputedStyle(el).fontSize) || 12;
+  const size = inCell ? 8 : (cssPx * 72) / 96;
+  const fontPx = inCell ? (size * 96) / 72 : cssPx;
+  const runs: { text: string; bold: boolean; left: number; top: number }[] = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let current = walker.nextNode();
+  while (current) {
+    const node = current as Text;
+    const parent = node.parentElement;
+    const bold = Boolean(parent?.closest("strong, b"));
+    for (const line of lineSlices(node)) runs.push({ text: line.text, bold, left: line.left, top: line.top });
+    current = walker.nextNode();
+  }
+  runs.sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: { text: string; bold: boolean; left: number; top: number }[][] = [];
+  for (const run of runs) {
+    const line = lines.find((row) => Math.abs(row[0].top - run.top) <= 4);
+    if (line) line.push(run);
+    else lines.push([run]);
+  }
+  pdf.setTextColor(17, 17, 17);
+  for (const line of lines) {
+    line.sort((a, b) => a.left - b.left);
+    let x = xOf(Math.min(...line.map((run) => run.left)));
+    const top = Math.min(...line.map((run) => run.top));
+    const y = yOf(top) + size * 0.32;
+    for (const run of line) {
+      const shown = pdfSafeText(run.text);
+      if (!shown) continue;
+      if (fitsWinAnsi(shown)) {
+        pdf.setFont("helvetica", run.bold ? "bold" : "normal");
+        pdf.setFontSize(size);
+        pdf.text(shown, x, y);
+        x += pdf.getTextWidth(shown);
+        continue;
+      }
+      const painted = paintLine(shown, fontPx, run.bold);
+      if (!painted) continue;
+      pdf.addImage(painted.url, "PNG", x, yOf(top), wOf(painted.width), wOf(painted.height));
+      x += wOf(painted.width);
+    }
   }
 }
 
@@ -222,6 +324,11 @@ export async function exportPdf(pages: HTMLElement[], filename: string): Promise
       for (const el of page.querySelectorAll("h1, h2, h3, p, th, td, figcaption, li, span, strong, em, a")) {
         if (el.closest("svg") || el.closest(".a4-watermark")) continue;
         if (!(el instanceof HTMLElement)) continue;
+        if (el.classList.contains("rich-text")) {
+          drawRichText(pdf, el, xOf, yOf, wOf);
+          continue;
+        }
+        if (el.closest(".rich-text")) continue;
         const nodes = [...el.childNodes].filter((node): node is Text => node.nodeType === Node.TEXT_NODE);
         if (!nodes.some((node) => node.data.trim())) continue;
         const bold = el.matches("h1, h2, h3, th, strong") || Number.parseInt(getComputedStyle(el).fontWeight, 10) >= 600;

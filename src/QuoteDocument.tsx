@@ -23,6 +23,7 @@ import {
   quoteSubtotal,
   showerAmount,
   sizeLabel,
+  splitEmojiRuns,
   splitMarks,
   stripMarks,
   sqmFromSqFt,
@@ -597,7 +598,7 @@ function ProductPage({
               )}
               <tr>
                 <th>Notes</th>
-                <td className="notes-cell"><Rich text={shower.notes.trim() || "—"} /></td>
+                <td className="notes-cell"><Rich text={shower.notes.trim() || "—"} emoji /></td>
               </tr>
             </tbody>
           </table>
@@ -744,12 +745,21 @@ function hardwareRows(shower: Shower, unit: UnitId, include: PrintInclude): stri
   return [doorText, extraText].filter(Boolean).join("; ") || "—";
 }
 
-function Rich({ text }: { text: string }) {
+function Rich({ text, emoji = false }: { text: string; emoji?: boolean }) {
   return (
     <span className="rich-text">
-      {splitMarks(text).map((part, index) =>
-        part.bold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>,
-      )}
+      {splitMarks(text).map((part, index) => {
+        if (!emoji) return part.bold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>;
+        return splitEmojiRuns(part.text).map((run, runIndex) =>
+          run.emoji ? (
+            <span key={`${index}-${runIndex}`} className="note-emoji">{run.text}</span>
+          ) : part.bold ? (
+            <strong key={`${index}-${runIndex}`}>{run.text}</strong>
+          ) : (
+            <span key={`${index}-${runIndex}`}>{run.text}</span>
+          ),
+        );
+      })}
     </span>
   );
 }

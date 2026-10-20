@@ -2261,6 +2261,22 @@ export function hardwarePriceLines(shower: Shower): { id: string; name: string; 
     .map((line) => ({ id: line.id, name: line.description, rate: line.rate, amount: line.amount }));
 }
 
+/** Keep emoji together for a font span. The stored note text is not changed. */
+export function splitEmojiRuns(text: string): { emoji: boolean; text: string }[] {
+  const re = /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*|\p{Regional_Indicator}{2}/gu;
+  const parts: { emoji: boolean; text: string }[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    if (match.index > last) parts.push({ emoji: false, text: text.slice(last, match.index) });
+    parts.push({ emoji: true, text: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push({ emoji: false, text: text.slice(last) });
+  if (!parts.length) parts.push({ emoji: false, text });
+  return parts;
+}
+
 export function splitMarks(text: string): { bold: boolean; text: string }[] {
   const parts: { bold: boolean; text: string }[] = [];
   const re = /\*\*([^*]+)\*\*|\*([^*]+)\*/g;

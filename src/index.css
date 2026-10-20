@@ -637,7 +637,20 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .product-page .spec-table td.notes-cell .rich-text span,
 .product-page .spec-table td.notes-cell .rich-text strong {
   white-space: pre-wrap;
-  font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: 12pt;
+  line-height: 1.2;
+  letter-spacing: 0;
+  word-spacing: normal;
+}
+.product-page .spec-table td.notes-cell .rich-text span.note-emoji {
+  font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 12pt;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  word-spacing: normal;
+  vertical-align: -0.12em;
 }
 .product-page .amount-table td {
   text-align: right;
@@ -756,9 +769,10 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
 .totals-table td { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
 .totals-table tr.grand th, .totals-table tr.grand td { font-weight: 800; font-size: 14px; }
 .doc-total { font-weight: 750; }
-.terms { white-space: pre-wrap; font-size: 12px; }
+.terms { white-space: pre-wrap; font-size: 12px; text-align: left; text-align-last: left; word-spacing: normal; letter-spacing: normal; }
 .rich-text,
 .rich-text strong,
+.rich-text b,
 .rich-text span {
   position: static;
   display: inline;
@@ -768,8 +782,15 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
   bottom: auto;
   left: auto;
   margin: 0;
+  padding: 0;
+  border: 0;
   transform: none;
+  letter-spacing: normal;
+  word-spacing: normal;
+  font-size: inherit;
+  line-height: inherit;
   white-space: inherit;
+  text-align: left;
 }
 .sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18mm; margin-top: 16mm; align-items: end; }
 .sign-col p { margin: 0; line-height: 1.3; }
@@ -908,12 +929,35 @@ svg.canvas[data-quote="yes"] [data-testid="plan-room"] { fill: transparent; }
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  .terms, .cover-desc, .rich-text, .rich-text strong, .rich-text span {
+    text-align: left !important;
+    text-align-last: left !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
+  }
   .rich-text,
   .rich-text strong,
-  .rich-text span {
+  .rich-text span,
+  .rich-text .note-emoji {
     position: static !important;
     display: inline !important;
     float: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .product-page .spec-table td.notes-cell,
+  .product-page .spec-table td.notes-cell .rich-text,
+  .product-page .spec-table td.notes-cell .rich-text span,
+  .product-page .spec-table td.notes-cell .rich-text strong {
+    font-size: 12pt !important;
+    line-height: 1.2 !important;
+    font-family: "Segoe UI", "Helvetica Neue", sans-serif !important;
+  }
+  .product-page .spec-table td.notes-cell .rich-text span.note-emoji {
+    font-family: "Segoe UI Emoji", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", sans-serif !important;
+    font-size: 12pt !important;
+    font-weight: 400 !important;
+    line-height: 1 !important;
   }
 }
 
